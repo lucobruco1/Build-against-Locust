@@ -158,10 +158,15 @@ test('server: static + REST + websocket state stream', async (t) => {
   assert.equal(joined.config.assist, 1, 'config sent on join is applied');
 
   let sawPlace = false, sawState = 0, lastTick = -1;
-  const stopAt = Date.now() + 6000;
+  // The budget is deliberately loose and the loop exits the moment both
+  // conditions hold. This file runs in parallel with the AI tests, and a browser
+  // tab (or a simulator) may be hammering the same cores; "the 20 Hz stream
+  // delivered four states" is a claim about ordering and content, not about how
+  // fast this machine is, so a slow tick must never be able to fail it.
+  const stopAt = Date.now() + 25_000;
   while (Date.now() < stopAt && (!sawPlace || sawState < 4)) {
     let msg;
-    try { msg = await q.next(() => true, 2500); } catch { break; }
+    try { msg = await q.next(() => true, 5000); } catch { continue; }
     if (msg.t !== 'state') continue;
     sawState++;
     assert.ok(msg.tick > lastTick, 'state ticks must be monotonic');
@@ -174,8 +179,8 @@ test('server: static + REST + websocket state stream', async (t) => {
     }
     assert.ok(msg.actors.every((a) => Number.isFinite(a.x) && Number.isFinite(a.y)));
   }
-  assert.ok(sawState >= 4, `expected several state broadcasts, got ${sawState}`);
-  assert.ok(sawPlace, 'bots should be placing blocks, and the client must see it as a delta');
+  assert.ok(sawState >= 4, `expected several state broadcasts, got ${sawState} in the budget`);
+  assert.ok(sawPlace, `bots should be placing blocks and the client must see it as a delta (saw ${sawState} states)`);
 
   // the deltas must be enough to reproduce the authoritative world
   const fresh = unpackWorld(payload);
