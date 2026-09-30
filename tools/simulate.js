@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Match } from '../game/match.js';
 import { TIMING } from '../shared/rules.js';
-import { packParams, unpackParams } from '../ai/nn.js';
+import { packParams, f32ToBase64 } from '../ai/nn.js';
 
 function arg(name, def) {
   const i = process.argv.indexOf('--' + name);
@@ -142,7 +142,7 @@ if (savePath) {
   for (const b of match.league.brains) {
     const pack = packParams(b.model.params);
     out[b.id] = {
-      pack: Array.from(pack),
+      b64: f32ToBase64(pack),
       obsDim: b.obsDim,
       nActions: b.nActions,
       stepCounter: b.stepCounter,
@@ -154,5 +154,4 @@ if (savePath) {
   fs.mkdirSync(path.dirname(savePath) || '.', { recursive: true });
   fs.writeFileSync(savePath, JSON.stringify(out));
   console.log(`weights → ${savePath}`);
-  void unpackParams;
 }

@@ -22,6 +22,7 @@ import { EZModel } from './efficientzero.js';
 import { Search } from './mcts.js';
 import { ReplayPool, Trajectory } from './buffer.js';
 import { builderPrior, locustPrior } from './prior.js';
+import { f32ToBase64, base64ToF32 } from './nn.js';
 
 export class Brain {
   constructor(o) {
@@ -356,14 +357,17 @@ export class Brain {
       assist: this.assist,
       cfg: c.meta.cfg,
       trainSteps: c.trainSteps,
-      pack: Array.from(c.pack),
+      b64: f32ToBase64(c.pack),   // see ai/nn.js: ~15× smaller than Array.from()
     };
   }
 
   loadCheckpoint(data) {
     if (!data) return false;
     if (data.obsDim !== this.obsDim || data.nActions !== this.nActions) return false;
-    const pack = data.pack instanceof Float32Array ? data.pack : Float32Array.from(data.pack);
+    let pack = null;
+    if (typeof data.b64 === 'string' && data.b64) pack = base64ToF32(data.b64);
+    else if (data.pack) pack = data.pack instanceof Float32Array ? data.pack : Float32Array.from(data.pack);
+    if (!pack) return false;
     const ok = this.model.loadPack(pack);
     if (!ok) return false;
     this.stepCounter = data.stepCounter || 0;

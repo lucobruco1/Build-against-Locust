@@ -19,6 +19,23 @@ import { Brain, BrainLeague } from '../ai/brain.js';
 import { ACT, LACT, EZ, PHASE } from '../shared/rules.js';
 import { Match } from '../game/match.js';
 
+/**
+ * The model's init draws from Math.random, so a convergence margin is only
+ * meaningful against a fixed stream. Pin it for the tests that assert on how
+ * far training gets, and restore the real one afterwards.
+ */
+function withSeededRandom(seed, fn) {
+  const real = Math.random;
+  let s = (seed >>> 0) || 0x9e3779b9;
+  Math.random = () => {
+    s ^= s << 13; s >>>= 0;
+    s ^= s << 17;
+    s ^= s << 5; s >>>= 0;
+    return s / 4294967296;
+  };
+  try { return fn(); } finally { Math.random = real; }
+}
+
 const smallCfg = {
   ...EZ, LATENT: 24, HIDDEN: 32, N_RES: 1, UNROLL: 3, SIMS: 8, BATCH: 8, MINI_BATCH: 4,
   LR: 1.5e-3, WD: 0, TARGET_SYNC: 400, MIN_BUFFER_FOR_TRAINING: 12, REANALYZE: false,
@@ -210,7 +227,7 @@ test('the model has the EfficientZero parts, wired the EfficientZero way', () =>
   assert.equal(model.nParams, paramCount(list));
 });
 
-test('training on recorded expert sequences lowers the loss (it really learns)', () => {
+test('training on recorded expert sequences lowers the loss (it really learns)', () => withSeededRandom(0xC0FFEE, () => {
   const codec = makeBuilderCodec();
   const ctx = builderCtx();
   const obs = codec.encode(ctx);
@@ -242,9 +259,9 @@ test('training on recorded expert sequences lowers the loss (it really learns)',
   const legal = new Uint8Array(15).fill(1);
   const root = new Search(model, { ...smallCfg, SIMS: 16 }).run(obs, legal, { sims: 16, temperature: 0, noise: false });
   assert.equal(root.action, ACT.PLACE_FRONT, 'and the search plays it');
-});
+}));
 
-test('the unrolled latents stay bounded instead of running away (EZ stability)', () => {
+test('the unrolled latents stay bounded instead of running away (EZ stability)', () => withSeededRandom(0xBADC0DE, () => {
   // Regression: with an unnormalised residual recurrence (next = s + out) the
   // latent RMS climbs ~5% per update, every head downstream inherits it, and the
   // loss limit-cycles forever instead of descending.
@@ -285,7 +302,7 @@ test('the unrolled latents stay bounded instead of running away (EZ stability)',
   }
   assert.ok(maxNorm < 500, `the gradient norm stayed in a sane range (peak ${maxNorm.toFixed(1)}, clip ${smallCfg.GRAD_CLIP})`);
   assert.ok(maxLogit < 100, `policy logits stayed finite and modest (peak ${maxLogit.toFixed(1)})`);
-});
+}));
 
 test('no NaNs leak from the model into the trained weights', () => {
   const codec = makeBuilderCodec();
@@ -539,6 +556,15 @@ test('checkpoints restore exactly, so learning survives a restart', () => {
   const after = dst.search.run(src.encode(ctx), mask, { sims: 6, temperature: 0, noise: false });
   assert.equal(after.action, before.action, 'a restored brain plans the same move');
   assert.ok(Math.abs(after.value - before.value) < 1e-4, 'and the same value');
+  // …and the file that holds it is not absurd: nine of these are written by the
+  // server's autosave, so serialising 300k Float32s as JSON numbers was a 46 MB
+  // write inside the game loop.
+  assert.equal(typeof cp.b64, 'string', 'weights are stored as base64 bytes');
+  const raw = Array.from(src.model.checkpoint().pack);
+  assert.ok(JSON.stringify(cp).length < JSON.stringify({ pack: raw }).length * 0.75,
+    'and much smaller than the array form would be');
+  assert.ok(dst.loadCheckpoint({ ...cp, b64: undefined, pack: raw }),
+    'legacy array-form checkpoints still load');
 });
 
 test('a league keeps ONE persistent locust brain with its own pool', () => {

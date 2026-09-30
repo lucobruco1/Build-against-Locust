@@ -58,6 +58,7 @@ test('server: static + REST + websocket state stream', async (t) => {
   game.tick();
   assert.ok(game.hunt, 'the server tracks the night even before it has recorded a cycle');
   assert.equal(game.hunt.kills, 0, 'nothing has been killed yet');
+  game.lastBroadcast = 0; game.tick();      // the 20 Hz throttle is a scheduler, not a rule
   assert.equal(game.match.events.length, 0,
     'a headless server still drains its event queue (it used to queue them forever and never record a cycle)');
   for (let i = 0; i < 40; i++) game.tick();
@@ -76,6 +77,15 @@ test('server: static + REST + websocket state stream', async (t) => {
   const health = await (await fetch(`${base}/api/health`)).json();
   assert.equal(health.ok, true);
   assert.ok(['lobby', 'build', 'hunt', 'revive'].includes(health.phase), `phase was ${health.phase}`);
+
+  // one malformed request target must not take the server down
+  const doubleSlash = await fetch(`${base}//js/main.js`);
+  assert.equal(doubleSlash.status, 200, '`//js/main.js` is `/js/main.js`, not a crash');
+  const badPath = await fetch(`${base}/api/nope/../health`);
+  assert.ok([200, 404].includes(badPath.status), `a dot-segment path is served or refused, not fatal (${badPath.status})`);
+  assert.ok(!(await badPath.text()).includes('shadow'), 'and never outside the allowed roots');
+  const traversal = await fetch(`${base}/../package.json`);
+  assert.ok([200, 400, 403, 404].includes(traversal.status), 'no 500s from path games');
 
   const index = await fetch(`${base}/`);
   assert.equal(index.status, 200);

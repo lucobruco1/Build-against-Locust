@@ -58,7 +58,8 @@ curl -s localhost:3000/api/health | jq
 curl -s localhost:3000/api/state  | jq '.builders[] | {name,score,wall,grabbed}'
 curl -s localhost:3000/api/brains | jq '.brains[0] | {trainSteps,loss,policy,assist}'
 curl -s -X POST localhost:3000/api/config -d '{"assist":0.6,"sims":1.5,"learn":true}'
-curl -s -X POST localhost:3000/api/save   -d '{"file":"data/runs/tonight.json"}'
+curl -s -X POST localhost:3000/api/save            # writes .data/brains.json
+curl -s -X POST localhost:3000/api/load            # puts the learned weights back
 ```
 
 `/api/rules` dumps the single source of truth (`shared/rules.js`) the client, server and
@@ -223,5 +224,7 @@ in `public/js/render/actors.js` — no asset downloads, and it crouches.
 * The Locust's `REACH_THROUGH_HOLE` is longer than its `GRAB_RANGE` on purpose: it can
   fish prey out of a half-sealed box if it has line of sight down the gap, but a fully
   sealed one is safe.
-* Weights persist as `Float32Array` blobs under `data/runs/`; `POST /api/save` /
-  `/api/load`, or `--save/--load` on the simulator.
+* Weights persist as base64 Float32 blobs in `.data/brains.json` (≈1.6 MB per brain);
+  `POST /api/save` / `POST /api/load`, the 60 s autosave (which skips a write when no
+  optimizer step happened since the last one), or `--save/--load` on the simulator.
+  Legacy `Array.from(weights)` checkpoints still load, and the tests pin both forms.

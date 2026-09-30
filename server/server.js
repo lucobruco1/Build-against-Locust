@@ -70,6 +70,7 @@ class Game {
     // be created only at the end of recordCycle(), so the first hunt tick of a
     // fresh server threw on `this.hunt.kills` — i.e. the server died at 90 seconds.
     this.hunt = { kills: 0, smashed: 0, grabs: 0, playerKills: 0 };
+    this.lastSavedSteps = -1;
   }
 
   createMatch(over = {}) {
@@ -153,9 +154,12 @@ class Game {
 
   async autosave() {
     try {
+      const steps = this.match.league.brains.reduce((a, b) => a + b.model.trainSteps, 0);
+      if (steps === this.lastSavedSteps) return;   // nothing learned since the last write
       await this.store.saveBrains(this.match.league.checkpoints(), {
-        cycle: this.match.cycle, ticks: this.match.tickCount, config: this.config(),
+        cycle: this.match.cycle, ticks: this.match.tickCount, optimizerSteps: steps, config: this.config(),
       });
+      this.lastSavedSteps = steps;
     } catch (err) { console.error('[game] autosave failed', err.message); }
   }
 
@@ -296,7 +300,19 @@ export function createGame(config = CONFIG) {
   const game = new Game(config);
   const api = createApi({ game, store: game.store });
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    // The URL parse has to be inside a guard of its own: a request target like
+    // `//` (which browsers and proxies do emit) makes `new URL` throw, and an
+    // exception before the try block takes the whole process down — i.e. one
+    // malformed line from any scanner ended the game for everybody.
+    let url;
+    const target = String(req.url || '/').replace(/^\/+/, '/');   // `//js/x.js` → `/js/x.js`
+    try {
+      url = new URL(target, `http://${req.headers.host || 'localhost'}`);
+    } catch {
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('400 — malformed request target');
+      return;
+    }
     try {
       if (url.pathname.startsWith('/api/')) {
         const handled = await api(req, res, url.pathname);

@@ -412,6 +412,30 @@ export function packParams(params) {
   return out;
 }
 
+/**
+ * Float32Array ↔ base64, for checkpoints that go through JSON.
+ *
+ * `Array.from(weights)` was the obvious thing to write and it costs 15×: nine
+ * brains of 298,745 params became a 46 MB `brains.json` that the autosave wrote
+ * synchronously into the game loop. Base64 of the raw bytes is the same data in
+ * ~1.6 MB total, and both the browser and Node have btoa/atob, so there is no
+ * dependency to add.
+ */
+export function f32ToBase64(f32) {
+  const u8 = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
+  let bin = '';
+  const CH = 8192;
+  for (let i = 0; i < u8.length; i += CH) bin += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  return btoa(bin);
+}
+
+export function base64ToF32(b64) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Float32Array(u8.buffer, 0, u8.length >> 2);
+}
+
 export function unpackParams(buf, params) {
   if (!buf || buf.length < 4) return false;
   const count = buf[0] | 0;
