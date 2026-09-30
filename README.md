@@ -150,6 +150,14 @@ latents) — i.e. the model is fitting all four objectives, not just the easy on
 Wall coverage ends between 17 % and 73 % per bot, and the Locust is training too, which
 it only starts to do once its buffer crosses `MIN_BUFFER_FOR_TRAINING`.
 
+The same loop verified on the real server with no client attached
+(`node server/server.js --timeScale 40`, 113 s of wall clock = 2 full cycles):
+`/api/summary` reported `cycles 2 · kills 5 · deaths 7 · blocksSmashed 182 ·
+blocksPlaced 4174 · peakWallCoverage 0.43 · peakScore 1033`, the phase clock went
+build → hunt → revive → build, the Locust was `null` outside its 3 minutes, all
+8 builders were alive again at the start of cycle 3 — and the "player" slot, left
+uncontrolled, had been eaten three times.
+
 `--speed F` is only a *log cadence* knob: the simulation always steps at a fixed 30 Hz,
 so results do not depend on it. (It used to inflate `dt`, which silently skipped 60× of
 the AI decisions per second — do not judge behaviour with it.)
