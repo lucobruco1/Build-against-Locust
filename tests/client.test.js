@@ -123,15 +123,7 @@ test('the browser module graph is complete and free of Node', async () => {
 
 /* ------------------------------------- 2. the in-tab engine speaks the protocol */
 
-/** poll a condition on the real event loop, for the tests that drive timers */
-async function until(fn, ms = 3000, what = 'condition') {
-  const t0 = Date.now();
-  for (;;) {
-    if (fn()) return true;
-    if (Date.now() - t0 > ms) throw new AssertionError({ message: `timed out waiting for ${what}`, operator: 'until' });
-    await new Promise((r) => setTimeout(r, 10));
-  }
-}
+import { until } from './helpers/until.js';
 
 /** a Map pretending to be localStorage, so persistence is testable without a DOM */
 function fakeStorage() {
@@ -345,12 +337,17 @@ test('net.js falls back to the local engine instead of an error screen', async (
   assert.match(src, /mode = 'local'/, 'the transport has a local mode');
   assert.match(src, /import\('\.\.\/\.\.\/game\/local\.js'\)/, 'loaded lazily, so a server player never pays for the AI modules');
   assert.match(src, /location\.protocol === 'file:'/, 'file:// never even tries the socket');
-  assert.match(src, /if \(this\.mode !== 'local'\) this\.retry\('closed'\)/, 'and stops reconnecting once it owns the match');
+  assert.match(src, /if \(this\.mode === 'connecting'\) this\.enableLocal\(/, 'a refused socket is a fact: hand over at once instead of backing off');
+  assert.match(src, /this\.armProbe\(\);\n.*try \{ this\.ws = new WebSocket/s, 'the deadline is armed before the socket exists, so a throwing or hanging connection still ends somewhere');
+  assert.match(src, /mode === 'localizing'/, 'a half-booted engine is not mistaken for a live one');
   assert.match(src, /this\.queue\.push\(obj\)/, 'messages sent during the probe are not dropped');
+  assert.match(src, /const store = safeStorage\(\);/, 'storage is fetched through a guard, never touched bare');
+  assert.match(src, /globalThis\.localStorage\.setItem\(probe, '1'\)/, 'the guard writes, because reading alone can be the part that is allowed');
 
   // the page must therefore wire the mode line up rather than only showing "connecting…"
   const main = await fs.readFile(path.join(ROOT, 'public', 'js', 'main.js'), 'utf8');
-  assert.match(main, /onMode: \(mode, why\) => this\.onMode\(mode, why\)/);
+  assert.match(main, /onMode: \(mode, why, engine, diag\) => this\.onMode\(mode, why, engine, diag\)/);
+  assert.match(main, /onStatus: \(txt\) => this\.setStatus\(txt\)/, 'the transport narrates what it is trying, so the menu is never wordless');
   assert.match(main, /menu-mode/);
   assert.match(main, /t: 'config'/, 'the settings menu talks to the tab in local mode, not to /api/config');
 });

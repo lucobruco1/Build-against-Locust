@@ -152,7 +152,7 @@
       </label>
     </div>
     <div class="menu-foot">
-      <div id="menu-status" class="dim">connecting…</div>
+      <div id="menu-status" class="dim">loading the client modules…</div>
       <div id="menu-mode" class="dim" title="which engine is running the match"></div>
       <div class="btn-row">
         <button id="btn-resume" class="primary hidden">back to the world</button>
@@ -225,5 +225,37 @@
 </div>
 
 <script type="module" src="public/js/main.js"></script>
+
+<script>
+  /*
+   * Inline and deliberately NOT a module. If the module graph never loads, no
+   * module gets the chance to say so, and the menu would sit on its initial
+   * text forever looking like the server's fault. So: if public/js/main.js has
+   * not announced itself after a few seconds, probe the paths it needs and put
+   * the answer on screen.
+   */
+  setTimeout(function () {
+    if (window.__game) return;
+    var line = document.getElementById('menu-status');
+    var mode = document.getElementById('menu-mode');
+    var paths = ['public/js/main.js', 'public/vendor/three.module.min.js', 'shared/rules.js', 'game/local.js'];
+    if (line) {
+      line.textContent = 'the client never started — probing the paths this page needs…';
+      line.classList.add('error');
+    }
+    Promise.all(paths.map(function (u) {
+      return fetch(u, { cache: 'no-store' }).then(
+        function (r) { return u + ' → HTTP ' + r.status; },
+        function (e) { return u + ' → ' + ((e && e.message) || 'fetch failed'); }
+      );
+    })).then(function (rows) {
+      rows.push(typeof WebSocket === 'function' ? 'WebSocket available' : 'no WebSocket constructor');
+      if (location.protocol === 'file:') rows.push('file:// cannot load ES modules — run any static server');
+      rows.push('base: ' + document.baseURI);
+      if (mode) mode.textContent = rows.join('  ·  ');
+      if (line) line.textContent = 'client modules did not execute — the lines below say which ones, devtools has the stack';
+    });
+  }, 6000);
+</script>
 </body>
 </html>

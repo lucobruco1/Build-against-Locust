@@ -32,8 +32,9 @@ export class Net {
     this.lastPong = 0;
     this.pending = null;
     this.closed = false;
-    this.mode = 'connecting';   // 'connecting' | 'server' | 'local'
+    this.mode = 'connecting';   // 'connecting' | 'server' | 'localizing' | 'local' | 'failed'
     this.local = null;
+    this.diag = { probeMs: this.probeMs, url: this.url };
     this.queue = [];            // messages sent before the local engine booted
     this._probe = null;
   }
@@ -44,10 +45,19 @@ export class Net {
     // normally we never get this far — but if a bundler or a same-origin shim did
     // load the page, sitting through a probe timeout would be pure rudeness.
     if (typeof location !== 'undefined' && location.protocol === 'file:') { this.enableLocal('opened straight from disk'); return; }
-    try { this.ws = new WebSocket(this.url); } catch (err) { return this.retry(err); }
+    // Armed first, on purpose: whatever this connection does — throw in the
+    // constructor, hang behind a proxy that never answers, get reset mid-handshake
+    // — the deadline is already in place, so there is no path where the page is
+    // left waiting on a socket. A spinner with no deadline is the bug report this
+    // whole mode exists to avoid.
+    this.armProbe();
+    this.say(`probing ${this.url}…`);
+    try { this.ws = new WebSocket(this.url); } catch (err) { this.say(`no WebSocket here (${err?.message || err}) — running the match in this tab`); return this.enableLocal(`WebSocket unavailable: ${err?.message || err}`); }
     this.ws.onopen = () => {
-      if (this._probe) { clearTimeout(this._probe); this._probe = null; }
       this.open = true; this.tries = 0; this.mode = 'server';
+      if (this._probe) { clearTimeout(this._probe); this._probe = null; }
+      this.diag.openedAt = Date.now();
+      this.h.onMode?.('server', `connected to ${this.url}`, null, this.diag);
       this.h.onOpen?.();
       if (this.pending) { const p = this.pending; this.pending = null; this.send(p); }
     };
@@ -56,19 +66,28 @@ export class Net {
       try { msg = JSON.parse(ev.data); } catch { return; }
       this.handle(msg);
     };
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
       this.open = false;
-      this.h.onClose?.();
-      if (this.mode !== 'local') this.retry('closed');
+      this.h.onClose?.(ev);
+      // a refused or instantly-closed socket is a *fact*, not a hiccup: no point
+      // sitting out the probe or backing off when the answer is already "nobody
+      // is listening here" (a proxied preview with no /ws support lands here)
+      if (this.mode === 'connecting') this.enableLocal(`nothing is listening on ${this.url}`);
+      else if (this.mode !== 'local') this.retry('closed');
     };
     this.ws.onerror = () => { try { this.ws.close(); } catch { /* ignore */ } };
-    // A WebSocket to a dead port can take a while to fail (or hang forever behind a
-    // proxy), so the decision is time-boxed rather than left to onerror.
+  }
+
+  /** The deadline after which this tab starts simulating for itself. */
+  armProbe() {
+    if (this._probe || this.probeMs <= 0) return;
     this._probe = setTimeout(() => {
       this._probe = null;
-      if (!this.open) this.enableLocal(`nothing answered ${this.url}`);
+      if (!this.open) this.enableLocal(`nothing answered ${this.url} in ${this.probeMs} ms`);
     }, this.probeMs);
   }
+
+  say(txt) { try { this.h.onStatus?.(txt); } catch { /* the status line is never worth a crash */ } }
 
   /** Both paths speak the same JSON, so both go through here. */
   handle(msg) {
@@ -82,36 +101,52 @@ export class Net {
    * which a server-connected player never pays for.
    */
   async enableLocal(reason) {
-    if (this.mode === 'local') return;
-    this.mode = 'local';
+    if (this.mode === 'local' || this.mode === 'localizing') return;
+    // 'localizing' first: if the boot itself throws we must not be stuck in
+    // 'connecting' (that is how this page ends up as a permanent spinner), and we
+    // must not be re-entered by a late onclose either.
+    this.mode = 'localizing';
     this.closed = true;                    // stop the reconnect loop for good
-    this.open = true;                      // the channel is live, just in-tab
+    if (this._probe) { clearTimeout(this._probe); this._probe = null; }
     try { this.ws?.close(); } catch { /* ignore */ }
     this.ws = null;
-    let mod;
+    this.say('loading the in-tab engine…');
+    const t0 = Date.now();
     try {
-      mod = this.h.localLoader ? await this.h.localLoader() : await import('../../game/local.js');
+      const mod = this.h.localLoader ? await this.h.localLoader() : await import('../../game/local.js');
+      this.diag.loadMs = Date.now() - t0;
+      const store = safeStorage();
+      this.local = new mod.LocalGame({
+        config: this.h.localConfig || {},
+        storage: store,
+        onMessage: (m) => this.handle(m),
+      });
+      this.local.start();                  // 30 Hz, from now on this tab is the server
+      this.open = true;                    // the channel is live, it just lives here
+      this.mode = 'local';
+      this.diag.bootMs = Date.now() - t0;
+      this.diag.reason = reason;
+      this.h.onMode?.('local', reason, this.local, this.diag);
+      const q = this.queue.splice(0);
+      if (this.pending) q.push(this.pending);
+      this.pending = null;
+      for (const m of q) this.local.send(m);
     } catch (err) {
-      this.open = false; this.mode = 'connecting';
-      this.h.onMode?.('failed', `could not load game/local.js: ${err?.message || err}`);
-      return;
+      // Losing the local engine is not a reason to go quiet: say so, loudly, and
+      // hand the socket another try in case it was only the module fetch that failed.
+      this.open = false;
+      this.mode = 'connecting';
+      this.local = null;
+      this.diag.error = String(err?.message || err);
+      // no auto-retry: `closed` is true, and a page that could not load its own
+      // engine is not going to be fixed by hammering it. Say what happened and let
+      // the player reload — the reason is on screen either way.
+      this.h.onMode?.('failed', `${this.diag.error} (while: ${reason}) — reload to try again`, null, this.diag);
     }
-    const store = typeof localStorage === 'undefined' ? null : localStorage;
-    this.local = new mod.LocalGame({
-      config: this.h.localConfig || {},
-      storage: store,
-      onMessage: (m) => this.handle(m),
-    });
-    this.local.start();
-    this.h.onMode?.('local', reason, this.local);
-    const q = this.queue.splice(0);
-    if (this.pending) q.push(this.pending);
-    this.pending = null;
-    for (const m of q) this.local.send(m);
   }
 
   retry(reason) {
-    if (this.closed || this.mode === 'local') return;
+    if (this.closed || this.mode === 'local' || this.mode === 'localizing') return;
     const wait = Math.min(6000, 400 * 2 ** this.tries++);
     this.h.onRetry?.(wait, reason);
     setTimeout(() => this.connect(), wait);
@@ -136,6 +171,24 @@ export class Net {
     this.local?.stop();
     try { this.ws?.close(); } catch { /* ignore */ }
   }
+}
+
+/**
+ * `localStorage` is not "may be missing", it is "may throw": in a sandboxed or
+ * cross-site iframe (an embedded preview, for instance) touching the getter raises
+ * SecurityError, and that used to abort the whole local boot *after* the mode had
+ * already flipped to 'local' — which left the page sitting on "connecting…" with
+ * nothing but a rejected promise in the console. Storage is a bonus, never a
+ * dependency: no localStorage, no persistence, the match still runs.
+ */
+export function safeStorage() {
+  try {
+    if (typeof globalThis.localStorage === 'undefined' || !globalThis.localStorage) return null;
+    const probe = '__gbtl_probe__';
+    globalThis.localStorage.setItem(probe, '1');
+    globalThis.localStorage.removeItem(probe);
+    return globalThis.localStorage;
+  } catch { return null; }
 }
 
 function defaultUrl() {

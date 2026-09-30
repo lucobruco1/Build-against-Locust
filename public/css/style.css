@@ -235,3 +235,18 @@ code { font-family: var(--mono); background: rgba(255,255,255,.07); padding: 1px
   .ai-panel { display: none; }
   .phase-bar { min-width: 0; width: calc(100vw - 24px); }
 }
+
+/* boot diagnostics: the menu's status line doubles as the error surface, so it
+   has to be legible when something actually went wrong instead of grey */
+#menu-status.error {
+  color: #ff8b9c;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+#menu-mode {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  opacity: 0.75;
+  white-space: pre-wrap;
+}

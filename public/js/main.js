@@ -23,8 +23,30 @@ const SENS = 1.0;
 const LOOK_K = 0.0026 * SENS;
 const PITCH_MIN = -1.35, PITCH_MAX = 1.25;
 
+/**
+ * A page that sits on "connecting…" forever is the worst possible failure mode,
+ * because it looks like the *server's* problem. So the first thing this module
+ * does is install a visible error surface, and the boot at the bottom is wrapped:
+ * if a module, a WebGL context or the in-tab engine throws, the menu says what
+ * and where instead of spinning.
+ */
+function reportToPage(where, err) {
+  const msg = where + ': ' + (err && err.message ? err.message : err);
+  console.error(where, err);
+  try {
+    const line = document.getElementById('menu-status');
+    if (line) { line.textContent = msg; line.classList.add('error'); }
+    const mode = document.getElementById('menu-mode');
+    if (mode && err && err.stack) mode.textContent = String(err.stack).split('\n').slice(1, 4).join(' · ');
+  } catch (ignored) { /* nothing left to do but the console */ }
+  return false;
+}
+window.addEventListener('error', (e) => reportToPage('client error', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => { reportToPage('unhandled promise', e.reason); if (e.preventDefault) e.preventDefault(); });
+
 class Client {
   constructor() {
+    this.setStatus('client booted — asking for a game server…');
     this.hud = new Hud();
     this.audio = new Ambience();
     this.world = null;
@@ -50,7 +72,11 @@ class Client {
       onOpen: () => this.setStatus('connected. press enter to spawn.'),
       onClose: () => { this.joined = false; this.setStatus('connection lost — retrying…'); },
       onRetry: (ms) => this.setStatus(`reconnecting in ${Math.round(ms / 100) / 10}s…`),
-      onMode: (mode, why) => this.onMode(mode, why),
+      onMode: (mode, why, engine, diag) => this.onMode(mode, why, engine, diag),
+      onStatus: (txt) => this.setStatus(txt),
+      // An in-tab match shares the tab with the renderer, so it starts cheap:
+      // no training, few sims. The menu's sliders override both when you join.
+      localConfig: { sims: 0.35, learn: false },
     });
     this.input = new InputPump(this.net);
     this.bindUi();
@@ -69,26 +95,35 @@ class Client {
    * game/local.js is the same Match, the same brains, the same 30 Hz clock — it
    * just lives in this tab, so the page is playable with no server at all.
    */
-  onMode(mode, why) {
+  onMode(mode, why, engine, diag = {}) {
     const line = document.getElementById('menu-mode');
     const btn = document.getElementById('btn-enter');
+    const took = diag.loadMs != null ? ` (engine loaded in ${diag.loadMs} ms)` : '';
     if (mode === 'local') {
-      if (line) line.textContent = 'in-tab match (game/local.js) — no game server answered, so this tab is authoritative';
-      this.setStatus('ready — the seven networks and the locust are running here. press enter to spawn.');
+      if (line) line.textContent = `in-tab match (game/local.js) — ${why}${took}. learned weights live in localStorage`;
+      this.setStatus('spinning up eight networks in this tab — the first mesh takes a second…');
       if (btn) btn.disabled = false;
-      this.net.local?.hello(document.getElementById('in-name')?.value || 'You');
       if (!this._localSaveHook) {
         this._localSaveHook = true;
         // closing the tab shouldn't throw away an hour of training
         addEventListener('beforeunload', () => this.net.local?.saveBrains());
       }
-      // a fresh tab resumes whatever it trained earlier, so the bots don't start dumb
-      this.net.send({ t: 'load' });
+      // Two frames of slack, deliberately: the status line above has to reach the
+      // screen before generating a 72×40×72 world and meshing 36 chunks eats the
+      // main thread. Without it a one-second boot is indistinguishable from a hang.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        try {
+          const t0 = performance.now();
+          engine?.hello(document.getElementById('in-name')?.value || 'You');
+          this.net.send({ t: 'load' });        // resume whatever this browser trained
+          this.setStatus(`ready — the sim is running in this tab (${Math.round(performance.now() - t0)} ms). press enter to spawn.`);
+        } catch (err) { reportToPage('the local match failed to start', err); }
+      }));
       return;
     }
     if (mode === 'failed') {
-      if (line) line.textContent = `could not start the in-tab engine: ${why}`;
-      this.setStatus('no server, and the local engine failed to load');
+      if (line) line.textContent = `the in-tab engine did not start: ${why}`;
+      this.setStatus('no game server, and the local engine failed — details below, then reload');
       return;
     }
     if (line) line.textContent = `authoritative match on ${this.net.url}`;
@@ -126,21 +161,26 @@ class Client {
     addEventListener('blur', () => { this.keys.clear(); this.input.move(0, 0, false); });
     const canvas = document.getElementById('gl');
     canvas.addEventListener('mousedown', (e) => {
+      this.mouseDown = true;
       if (!this.locked()) { if (this.joined) this.lock(); return; }
       if (e.button === 0) this.buttons.left = true;
       if (e.button === 2) this.buttons.right = true;
       this.hud.setCrosshairActive(true);
     });
     addEventListener('mouseup', (e) => {
+      this.mouseDown = false;
       if (e.button === 0) this.buttons.left = false;
       if (e.button === 2) this.buttons.right = false;
       this.hud.setCrosshairActive(false);
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('mousemove', (e) => {
-      if (!this.locked()) return;
-      this.view.yaw -= e.movementX * LOOK_K;
-      this.view.pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, this.view.pitch - e.movementY * LOOK_K));
+      if (!this.looking()) return;
+      // without the lock, movementX/Y are not reported; read the drag instead
+      const dx = e.movementX ?? 0, dy = e.movementY ?? 0;
+      if (!this.locked() && dx === 0 && dy === 0) return;
+      this.view.yaw -= dx * LOOK_K;
+      this.view.pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, this.view.pitch - dy * LOOK_K));
     });
     addEventListener('wheel', (e) => {
       if (!this.joined) return;
@@ -148,7 +188,8 @@ class Client {
     }, { passive: true });
     document.addEventListener('pointerlockchange', () => {
       const on = this.locked();
-      if (!on && this.joined) {
+      if (on) this.dragging = false;
+      if (!on && this.joined && !this.dragging) {
         this.input.move(0, 0, false);
         document.getElementById('menu')?.classList.remove('hidden');
         resume?.classList.remove('hidden');
@@ -160,7 +201,32 @@ class Client {
   }
 
   locked() { return document.pointerLockElement === document.getElementById('gl'); }
-  lock() { document.getElementById('gl')?.requestPointerLock?.(); }
+
+  /**
+   * Pointer lock is refused in some embeds — a sandboxed iframe being the common
+   * one — and a first-person game whose mouse look silently does nothing is worse
+   * than useless. So: ask for the lock, and if the browser says no, look becomes
+   * drag-with-the-button-held instead, which needs no permission at all.
+   */
+  lock() {
+    const canvas = document.getElementById('gl');
+    let req = null;
+    try { req = canvas?.requestPointerLock?.(); } catch { req = null; }
+    if (req && typeof req.catch === 'function') req.catch(() => this.dragLook('the browser refused pointer lock here'));
+  }
+
+  dragLook(why) {
+    if (this.dragging) return;
+    this.dragging = true;
+    this.hud.hideMenu();
+    this.audio.start();
+    const line = document.getElementById('menu-mode');
+    if (line) line.textContent = `${why} — hold a mouse button and drag to look; the rest works as normal`;
+    this.setStatus('drag to look (pointer lock unavailable in this frame)');
+  }
+
+  /** whether the mouse should be steering the camera right now */
+  looking() { return this.locked() || (this.dragging && this.mouseDown); }
 
   onKey(e, down) {
     const k = e.code;
@@ -193,7 +259,7 @@ class Client {
         body: JSON.stringify(body),
       });
       this.hud.banner('settings applied', `sims ${sims}× · prior ${assist} · time ${time}× · train ${learn?.checked ? 'on' : 'off'}`, 'build');
-    } catch { this.setStatus('could not reach /api/config'); }
+    } catch { this.setStatus('could not reach /api/config — is a game server serving this page?'); }
   }
 
   join() {
@@ -243,14 +309,14 @@ class Client {
         this.scene.setWorld(w);
         this.world = w;
       } else {
+        this.setStatus('meshing the voxel world…');
         this.world = w;
         this.scene = new GameScene(document.getElementById('gl'), w);
-        this.scene.voxels.buildAll();
+        this.scene.voxels.buildAll();       // the one genuinely slow call in the boot path
       }
       this.worldGen = true;
     } catch (err) {
-      console.error('world payload failed to decode', err);
-      this.setStatus('world decode failed: ' + err.message);
+      reportToPage('world payload failed to decode', err);
     }
   }
 
@@ -432,6 +498,11 @@ function lerpAngle(a, b, t) {
   return a + d * t;
 }
 
-const client = new Client();
-window.__game = client;
-if (!window.__hudReady) { window.__hudReady = true; }
+let client = null;
+try {
+  client = new Client();
+  window.__game = client;
+  if (!window.__hudReady) { window.__hudReady = true; }
+} catch (err) {
+  reportToPage('the client failed to start', err);
+}
