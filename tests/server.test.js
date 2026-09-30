@@ -5,6 +5,7 @@
  * (c) block edits reach the client as deltas, (d) the REST surface works.
  */
 
+import fs from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGame } from '../server/server.js';
@@ -45,6 +46,10 @@ test('server: static + REST + websocket state stream', async (t) => {
     game.hub.closeAll();
     clearInterval(game.timer);
     await new Promise((r) => server.close(r));
+    await game.store.close();
+    // the store flushes brains.json + summary.json into the repo; a test run
+    // should not leave 13 MB of them behind
+    await fs.rm('.data-test', { recursive: true, force: true });
   });
 
   // ---- the hunt bookkeeping must survive a tick with nobody watching ------
