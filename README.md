@@ -22,7 +22,7 @@ The networks keep what they learned across cycles, and can be saved to disk and 
 
 ```
 npm start          # http://localhost:3000  (game + server, port via PORT or --port)
-npm test           # 95 unit/integration tests, node:test only
+npm test           # 104 unit/integration tests, node:test only
 npm run sim        # headless match in the terminal, with the learning curves
 ```
 
@@ -38,11 +38,18 @@ vendored under `public/vendor/`.
 python3 -m http.server 8000      # then open http://localhost:8000/index.html
 ```
 
-With nothing listening on `/ws`, `public/js/net.js` gives up after a 1.5 s probe and boots
-`game/local.js`, which is the *same* `Match` — same 30 Hz clock, same seven builders with
+With nothing listening on `/ws`, `public/js/net.js` gives up (at once if the socket is
+refused, after a 1.5 s deadline if it hangs) and boots `game/local.js`, which is the
+*same* `Match` — same 30 Hz clock, same seven builders with
 one EfficientZero brain each, same Locust — running in the tab. The HUD's menu line tells
 you which of the two you are looking at (`in-tab match` vs the socket address). Weights
-trained in the tab go to `localStorage`, and the in-tab engine never touches `/api/*`.
+trained in the tab go to `localStorage` *when the frame is allowed to have any* — in a
+sandboxed embed the getter throws, so it is probed and then simply skipped, and the
+in-tab engine never calls `/api/*` at all. Pointer lock is treated the same way: asked
+for, and if refused, look becomes drag-with-a-button-held instead of a mouse that
+silently does nothing. Nothing is allowed to hang in silence either — the menu's status
+line is also the error surface, with a classic inline watchdog next to the module tag
+that probes the asset paths when the module never executed.
 A double-clicked `file://` document is the one case that cannot work, because browsers
 refuse ES modules from an opaque origin — hence "any static server", not "no server".
 
