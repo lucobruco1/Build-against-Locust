@@ -16,6 +16,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Match } from '../game/match.js';
+import {
+  BROADCAST_MS, applyMatchConfig, applyMatchInput, cycleSummary, foldHunt, freshHunt,
+} from '../game/local.js';
 import { WebSocketHub } from './ws.js';
 import { createApi } from './api.js';
 import { Store } from './store.js';
@@ -69,7 +72,7 @@ class Game {
     // despawned before the client (or the cycle record) asks for them. It used to
     // be created only at the end of recordCycle(), so the first hunt tick of a
     // fresh server threw on `this.hunt.kills` — i.e. the server died at 90 seconds.
-    this.hunt = { kills: 0, smashed: 0, grabs: 0, playerKills: 0 };
+    this.hunt = freshHunt();
     this.lastSavedSteps = -1;
   }
 
@@ -94,45 +97,11 @@ class Game {
     };
   }
 
-  applyConfig(body) {
-    if (!body) return;
-    if (body.timeScale !== undefined) this.timeScale = Math.max(0.05, Math.min(20, Number(body.timeScale) || 1));
-    if (body.paused !== undefined) this.paused = !!body.paused;
-    if (body.learn !== undefined) {
-      const on = !!body.learn;
-      this.match.learn = on;
-      for (const b of this.match.league.brains) b.learning = on;
-    }
-    if (body.assist !== undefined) {
-      const a = Math.max(0, Math.min(1, Number(body.assist)));
-      this.match.assist = a;
-      for (const b of this.match.league.brains) if (b.kind !== 'locust') b.assist = a;
-    }
-    if (body.sims !== undefined) {
-      const s = Math.max(0.1, Math.min(8, Number(body.sims) || 1));
-      this.match.simScale = s;
-      for (const b of this.match.league.brains) b.cfg.SIM_SCALE = s;
-    }
-  }
+  // Both drivers share game/local.js's helpers: the menu must not behave
+  // differently depending on whether the server or a browser tab is simulating.
+  applyConfig(body) { return applyMatchConfig(this, body); }
 
-  applyInput(msg) {
-    const m = this.match;
-    switch (msg.t) {
-      case 'input': {
-        if (msg.look) m.setPlayerLook(msg.look[0], msg.look[1]);
-        if (msg.move) m.setPlayerMove(msg.move[0], msg.move[1], msg.sprint);
-        if (msg.jump) m.playerJump();
-        if (msg.place) m.playerPlace();
-        if (msg['break']) m.playerBreak();
-        if (msg.select !== undefined) m.playerSelect(msg.select);
-        if (msg.cycle !== undefined) m.playerCycle(msg.cycle);
-        break;
-      }
-      case 'act': m.playerAct?.(msg.action | 0); break;
-      case 'say': m.say(String(msg.text || '').slice(0, 120), 'player'); break;
-      default: break;
-    }
-  }
+  applyInput(msg) { return applyMatchInput(this.match, msg); }
 
   start() {
     this.timer = setInterval(() => this.tick(), TIMING.TICK_MS);
@@ -173,15 +142,9 @@ class Game {
 
     // keep the best hunt numbers seen so far; the Locust object is gone by the
     // time the despawn event reaches us
-    if (this.match.locust) {
-      const st = this.match.locust.stats;
-      this.hunt.kills = Math.max(this.hunt.kills, st.kills);
-      this.hunt.smashed = Math.max(this.hunt.smashed, st.smashed);
-      this.hunt.grabs = Math.max(this.hunt.grabs, st.grabs);
-      this.hunt.playerKills = Math.max(this.hunt.playerKills, st.playerKills || 0);
-    }
+    foldHunt(this.hunt, this.match.locust);
 
-    if (now - this.lastBroadcast >= 50) {      // 20 Hz
+    if (now - this.lastBroadcast >= BROADCAST_MS) {
       this.lastBroadcast = now;
       this.broadcast();
     }
@@ -201,33 +164,12 @@ class Game {
   }
 
   async recordCycle() {
-    const m = this.match;
-    const wall = m.builders.map((b) => b.security?.wall ?? 0);
-    const placed = m.builders.reduce((a, b) => a + b.stats.placed, 0);
-    const broken = m.builders.reduce((a, b) => a + b.stats.broken, 0);
-    const deaths = m.builders.reduce((a, b) => a + b.stats.deaths, 0);
-    const escapes = m.builders.reduce((a, b) => a + b.stats.escapes, 0);
-    const updates = m.league.brains.reduce((a, b) => a + b.model.trainSteps, 0);
-    await this.store.recordCycle({
-      cycle: m.cycle,
-      kills: this.hunt.kills, smashed: this.hunt.smashed, grabs: this.hunt.grabs,
-      playerKills: this.hunt.playerKills,
-      deaths, escapes, placed, broken,
-      wallMean: wall.reduce((a, b) => a + b, 0) / (wall.length || 1),
-      bestScore: Math.max(0, ...m.builders.map((b) => b.score)),
-      secureSeconds: Math.round(m.builders.reduce((a, b) => a + (b.security?.sealed ? 90 : 0), 0)),
-      updates,
-      builders: m.builders.map((b) => ({
-        name: b.name, wall: b.security?.wall ?? 0, score: Math.round(b.score),
-        deaths: b.stats.deaths, escaped: b.stats.escapes, placed: b.stats.placed,
-        killedByLocust: 0,
-      })),
-    });
-    this.hunt = { kills: 0, smashed: 0, grabs: 0, playerKills: 0 };
+    await this.store.recordCycle(cycleSummary(this.match, this.hunt));
+    this.hunt = freshHunt();
   }
 
   reset() {
-    this.hunt = { kills: 0, smashed: 0, grabs: 0, playerKills: 0 };
+    this.hunt = freshHunt();
     const learn = this.match.learn;
     const league = this.match.league;          // keep the learned brains: a reset
     this.match = this.createMatch({ learn, league }); // is not amnesia
@@ -250,9 +192,13 @@ const MIME = {
   '.map': 'application/json',
 };
 
-// only these prefixes are ever readable from disk
+// Only these prefixes are ever readable from disk. The page lives at the repo
+// root and references its assets relatively, so `/public/...` has to resolve the
+// way a plain static server would resolve it; the short /js /css /vendor aliases
+// stay for anyone who bookmarked them or imports a module directly.
 const SERVE = {
-  '/': 'public/index.html',
+  '/': 'index.html',
+  '/public/': 'public/',
   '/css/': 'public/css/',
   '/js/': 'public/js/',
   '/vendor/': 'public/vendor/',
@@ -264,7 +210,7 @@ const SERVE = {
 
 async function serveStatic(req, res, pathname) {
   let rel = null;
-  if (pathname === '/' || pathname === '/index.html') rel = 'public/index.html';
+  if (pathname === '/' || pathname === '/index.html') rel = 'index.html';
   else {
     for (const [prefix, dir] of Object.entries(SERVE)) {
       if (prefix !== '/' && pathname.startsWith(prefix)) { rel = dir + pathname.slice(prefix.length); break; }

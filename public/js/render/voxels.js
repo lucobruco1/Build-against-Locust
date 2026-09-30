@@ -9,7 +9,7 @@
  */
 
 import * as THREE from 'three';
-import { BLOCK_DEFS, B, WORLD, isSolid, isOpaque } from '/shared/rules.js';
+import { BLOCK_DEFS, B, WORLD, isSolid, isOpaque } from '../../../../shared/rules.js';
 
 const CHUNK = WORLD.CHUNK;
 

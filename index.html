@@ -1,16 +1,44 @@
 <!DOCTYPE html>
+<!--
+  ============================================================================
+  Build to Survive the Locust — the page itself, at the REPO ROOT.
+  ============================================================================
+  Every asset path here is relative to the repository root, and every module in
+  public/js imports its siblings and the shared/core/ai/game trees with relative
+  specifiers, so this one file is the entry point however it gets served:
+
+    npm start                    node server/server.js, listening on :3000
+    python3 -m http.server       any static server rooted at the repo (or GitHub
+                                 Pages under the repo's subpath)
+
+  The Node server serves this file at `/` and keeps the short /js /css /vendor
+  aliases; a plain static server rooted at the repo finds public/css, public/js,
+  public/vendor, shared/, core/, ai/, game/ at those same relative paths.
+
+  What differs is only who runs the match:
+
+    * reached from `npm start`   the authoritative Match runs on the server and
+      streams the packed world once plus state and block deltas at 20 Hz over /ws
+    * no game server behind it   public/js/net.js notices the socket never opens
+      and boots game/local.js — the very same Match, MCTS and EfficientZero
+      training, in this tab, with the learned weights kept in localStorage
+
+  So the page is never blank and never "connection refused": an index.html that
+  only works if you remember to start Node first is a documentation bug.
+  ============================================================================
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Build to Survive the Locust</title>
 <meta name="description" content="A Minecraft-like voxel survival game where seven bots and you fortify against an EfficientZero-driven Locust." />
-<link rel="stylesheet" href="/css/style.css" />
+<link rel="stylesheet" href="public/css/style.css" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0b0f'/%3E%3Cpath d='M11 8h10v6l-3 2v8h-4v-8l-3-2z' fill='%23e7c7cf'/%3E%3Ccircle cx='13' cy='11' r='1.4' fill='%237fe0ff'/%3E%3Ccircle cx='19' cy='11' r='1.4' fill='%237fe0ff'/%3E%3C/svg%3E" />
 <script type="importmap">
 {
   "imports": {
-    "three": "/vendor/three.module.min.js"
+    "three": "public/vendor/three.module.min.js"
   }
 }
 </script>
@@ -125,6 +153,7 @@
     </div>
     <div class="menu-foot">
       <div id="menu-status" class="dim">connecting…</div>
+      <div id="menu-mode" class="dim" title="which engine is running the match"></div>
       <div class="btn-row">
         <button id="btn-resume" class="primary hidden">back to the world</button>
         <button id="btn-enter" class="primary" disabled>enter the world</button>
@@ -195,6 +224,6 @@
   </div>
 </div>
 
-<script type="module" src="/js/main.js"></script>
+<script type="module" src="public/js/main.js"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@
  * plus a couple of locally-derived extras (`localId`, `fps`, `ping`).
  */
 
-import { BLOCK_DEFS, B, HOTBAR, ENTITY } from '/shared/rules.js';
+import { BLOCK_DEFS, B, HOTBAR, ENTITY } from '../../../shared/rules.js';
 import { BOT_COLORS, hex } from './palette.js';
 
 const $ = (id) => document.getElementById(id);

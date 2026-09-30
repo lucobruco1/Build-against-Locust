@@ -22,12 +22,29 @@ The networks keep what they learned across cycles, and can be saved to disk and 
 
 ```
 npm start          # http://localhost:3000  (game + server, port via PORT or --port)
-npm test           # 84 unit/integration tests, node:test only
+npm test           # 95 unit/integration tests, node:test only
 npm run sim        # headless match in the terminal, with the learning curves
 ```
 
 Requires Node ≥ 18. Nothing to install: no build step, no packages, `three.js` r160.1 is
 vendored under `public/vendor/`.
+
+### …or no server at all
+
+`index.html` lives at the **repo root** and every path in it (and every module specifier in
+`public/js`, `shared/`, `core/`, `ai/`, `game/`) is relative, so any static host works:
+
+```bash
+python3 -m http.server 8000      # then open http://localhost:8000/index.html
+```
+
+With nothing listening on `/ws`, `public/js/net.js` gives up after a 1.5 s probe and boots
+`game/local.js`, which is the *same* `Match` — same 30 Hz clock, same seven builders with
+one EfficientZero brain each, same Locust — running in the tab. The HUD's menu line tells
+you which of the two you are looking at (`in-tab match` vs the socket address). Weights
+trained in the tab go to `localStorage`, and the in-tab engine never touches `/api/*`.
+A double-clicked `file://` document is the one case that cannot work, because browsers
+refuse ES modules from an opaque origin — hence "any static server", not "no server".
 
 ---
 
@@ -42,7 +59,7 @@ vendored under `public/vendor/`.
 | left click | break block |
 | right click | place selected block |
 | `1`–`9`, mouse wheel | hotbar |
-| `H` | help overlay · `T` | push the HUD's sliders to the server |
+| `H` | help overlay · `T` | push the HUD's sliders to the server (or to the tab) |
 | `Esc` | release the pointer / dismiss the tally screen |
 
 The bots act through the **same fifteen verbs** you do — the discrete action space is
@@ -55,7 +72,8 @@ You can also drive anything from the command line while it runs:
 
 ```bash
 curl -s localhost:3000/api/health | jq
-curl -s localhost:3000/api/state  | jq '.builders[] | {name,score,wall,grabbed}'
+curl -s localhost:3000/api/state  | jq '.actors[] | {name,hp,wall,grabbed}'   # what the client gets
+curl -s localhost:3000/api/snapshot | jq '.builders[] | {name,score,reward,inv}'  # the untrimmed one
 curl -s localhost:3000/api/brains | jq '.brains[0] | {trainSteps,loss,policy,assist}'
 curl -s -X POST localhost:3000/api/config -d '{"assist":0.6,"sims":1.5,"learn":true}'
 curl -s -X POST localhost:3000/api/save            # writes .data/brains.json
@@ -68,6 +86,13 @@ history, `POST /api/reset` and `POST /api/load` round out the set. The WebSocket
 `/ws` carries 20 Hz state deltas plus 30 Hz-collapsed world edits, RLE-packed (a full
 72×40×72 grid is ~4 % of its raw size) and each `place` event carries the owner id, so
 the client can grey out blocks that are not yours to break.
+
+Those message shapes, not the transport, are the client's whole world: `game/local.js`
+answers `join`, `input`, `config`, `say`, `act`, `reset`, `save`, `load` and `summary`
+with byte-identical payloads, which is why the same `public/js/main.js` runs against
+either. The server's `Game` and the tab's `LocalGame` share `applyMatchInput`,
+`applyMatchConfig`, `foldHunt` and `cycleSummary` from that one file, so a settings change
+or a hunt statistic cannot mean two different things depending on who is simulating.
 
 ---
 
@@ -201,13 +226,17 @@ ai/brain.js          Brain / BrainLeague: decide → remember → train, checkpo
 game/actions.js      the verbs: place/break legality, ownership, smash, grab, strike
 game/match.js        the phase clock, spawn/revive, scoring, rewards, human hooks
 game/net.js          snapshot encoding, RLE world packing, event packing
+game/local.js        the match with no server: the same tick/broadcast/hunt/record loop,
+                     driven by a callback instead of a socket and by localStorage
+                     instead of files — plus the helpers server/server.js uses too
+index.html           the entry point, at the repo root, for both ways of serving it
 server/server.js     static files + REST + WebSocket hub, 30 Hz tick / 20 Hz broadcast
 server/{ws,store,api}.js  dependency-free RFC6455 hub, atomic JSON persistence, routes
-public/              index.html, css, js/{main,net,hud,palette,audio}.js,
+public/              css, js/{main,net,hud,palette,audio}.js,
                      js/render/{voxels,actors,scene}.js, vendor/three.module.min.js
 tools/simulate.js    headless runs / benchmarks / the integration harness
 tests/               world 8 · nav 9 · physics 13 · actions 16 · match 15 · ai 21 ·
-                     server 2  → 84 tests, all green with `npm test`
+                     server 2 · client 11  → 95 tests, all green with `npm test`
 ```
 
 The client renders voxels greedily per chunk from the same `shared/rules.js` block table,
@@ -228,3 +257,13 @@ in `public/js/render/actors.js` — no asset downloads, and it crouches.
   `POST /api/save` / `POST /api/load`, the 60 s autosave (which skips a write when no
   optimizer step happened since the last one), or `--save/--load` on the simulator.
   Legacy `Array.from(weights)` checkpoints still load, and the tests pin both forms.
+* In the in-tab match, *you* are the CPU budget: eight brains doing MCTS at 30 Hz plus
+  three towers of gradient work, in the same thread as the renderer. `train` is off by
+  default there and the `sims` slider goes down to 0.2 (≈5 root simulations a decision) —
+  drop it if the frame rate matters more than the bots' judgement. Learning still writes
+  to `localStorage` when you press `T` or close the tab.
+* `public/` is served twice by `npm start`, once as the repo layout (`/public/…`) so the
+  root `index.html` resolves, once through the short `/js` `/css` `/vendor` aliases. The
+  client never imports an absolute path, and `tests/client.test.js` re-resolves every
+  specifier in the tree with browser rules against the files on disk — that is what keeps
+  a static deployment honest rather than merely plausible.

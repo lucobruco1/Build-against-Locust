@@ -9,9 +9,9 @@
  *  - drives the renderer, HUD, banners and audio.
  */
 
-import { placeTarget } from '/core/raycast.js';
-import { unpackWorld } from '/game/net.js';
-import { B, BLOCK_DEFS, LACT, ENTITY } from '/shared/rules.js';
+import { placeTarget } from '../../../core/raycast.js';
+import { unpackWorld } from '../../../game/net.js';
+import { B, BLOCK_DEFS, LACT, ENTITY } from '../../../shared/rules.js';
 import { GameScene } from './render/scene.js';
 import { Hud } from './hud.js';
 import { Net, InputPump } from './net.js';
@@ -50,6 +50,7 @@ class Client {
       onOpen: () => this.setStatus('connected. press enter to spawn.'),
       onClose: () => { this.joined = false; this.setStatus('connection lost — retrying…'); },
       onRetry: (ms) => this.setStatus(`reconnecting in ${Math.round(ms / 100) / 10}s…`),
+      onMode: (mode, why) => this.onMode(mode, why),
     });
     this.input = new InputPump(this.net);
     this.bindUi();
@@ -61,6 +62,36 @@ class Client {
   setStatus(txt) {
     const el = document.getElementById('menu-status');
     if (el) el.textContent = txt;
+  }
+
+  /**
+   * Which engine the channel ended up talking to. 'local' is not an error state:
+   * game/local.js is the same Match, the same brains, the same 30 Hz clock — it
+   * just lives in this tab, so the page is playable with no server at all.
+   */
+  onMode(mode, why) {
+    const line = document.getElementById('menu-mode');
+    const btn = document.getElementById('btn-enter');
+    if (mode === 'local') {
+      if (line) line.textContent = 'in-tab match (game/local.js) — no game server answered, so this tab is authoritative';
+      this.setStatus('ready — the seven networks and the locust are running here. press enter to spawn.');
+      if (btn) btn.disabled = false;
+      this.net.local?.hello(document.getElementById('in-name')?.value || 'You');
+      if (!this._localSaveHook) {
+        this._localSaveHook = true;
+        // closing the tab shouldn't throw away an hour of training
+        addEventListener('beforeunload', () => this.net.local?.saveBrains());
+      }
+      // a fresh tab resumes whatever it trained earlier, so the bots don't start dumb
+      this.net.send({ t: 'load' });
+      return;
+    }
+    if (mode === 'failed') {
+      if (line) line.textContent = `could not start the in-tab engine: ${why}`;
+      this.setStatus('no server, and the local engine failed to load');
+      return;
+    }
+    if (line) line.textContent = `authoritative match on ${this.net.url}`;
   }
 
   /* ------------------------------------------------------------------ UI */
@@ -148,10 +179,18 @@ class Client {
   async pushConfig() {
     const [sims, assist, time] = this.sliders.map((i) => Number(i?.value ?? 1));
     const [learn] = this.checks;
+    const body = { sims, assist, timeScale: time, learn: !!learn?.checked };
+    if (this.net.mode === 'local') {
+      // no HTTP in a page that has no HTTP: the same fields, sent as a message
+      this.net.send({ t: 'config', ...body });
+      this.net.local?.saveBrains();          // training in a tab is worth keeping
+      this.hud.banner('settings applied', `sims ${sims}× · prior ${assist} · time ${time}× · train ${learn?.checked ? 'on' : 'off'}`, 'build');
+      return;
+    }
     try {
       await fetch('/api/config', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sims, assist, timeScale: time, learn: !!learn?.checked }),
+        body: JSON.stringify(body),
       });
       this.hud.banner('settings applied', `sims ${sims}× · prior ${assist} · time ${time}× · train ${learn?.checked ? 'on' : 'off'}`, 'build');
     } catch { this.setStatus('could not reach /api/config'); }
@@ -180,12 +219,20 @@ class Client {
       if (msg.state) this.onState(msg.state);
       const btn = document.getElementById('btn-enter');
       if (btn) btn.disabled = false;
-      this.setStatus('ready — the sim is running on the server');
+      this.setStatus(this.net.mode === 'local'
+        ? 'ready — the sim is running in this tab'
+        : 'ready — the sim is running on the server');
     } else if (msg.t === 'joined') {
       if (msg.world) this.applyWorld(msg.world);
       this.setStatus('spawned. WASD to move.');
     } else if (msg.t === 'state') {
       this.onState(msg);
+    } else if (msg.t === 'loaded') {
+      if (this.net.mode === 'local' && msg.loaded) {
+        this.setStatus(`resumed ${msg.loaded} learned network(s) from this browser`);
+      }
+    } else if (msg.t === 'saved' && msg.error) {
+      this.setStatus(`could not save the networks here: ${msg.error}`);
     }
   }
 

@@ -92,15 +92,38 @@ test('server: static + REST + websocket state stream', async (t) => {
   const traversal = await fetch(`${base}/../package.json`);
   assert.ok([200, 400, 403, 404].includes(traversal.status), 'no 500s from path games');
 
+  // ---- the page and everything it references, as served -------------------
   const index = await fetch(`${base}/`);
   assert.equal(index.status, 200);
   const html = await index.text();
   assert.match(html, /Build to Survive/);
-  assert.match(html, /"three": "\/vendor\/three.module.min.js"/, 'importmap must alias three to the vendored copy');
+  const map = JSON.parse(/<script type="importmap">([\s\S]*?)<\/script>/.exec(html)[1]);
+  assert.equal(map.imports.three, 'public/vendor/three.module.min.js',
+    'importmap must alias three to the vendored copy, relative to the page');
 
-  for (const p of ['/js/main.js', '/css/style.css', '/core/world.js', '/shared/rules.js', '/game/net.js', '/vendor/three.module.min.js']) {
+  // Every path the document names must answer, resolved exactly the way the
+  // browser resolves it. This is what breaks silently when the page moves.
+  const refs = [...html.matchAll(/(?:href|src)="([^"#]+)"/g)].map((m) => m[1])
+    .filter((u) => !u.startsWith('data:') && !u.startsWith('http'))
+    .concat(Object.values(map.imports || {}), Object.values(map.scopes || {}));
+  assert.ok(refs.length >= 3, 'the page should reference its css, module and importmap');
+  for (const rel of refs) {
+    const url = new URL(rel, `${base}/`);
+    assert.equal(url.origin + url.pathname, `${base}${url.pathname}`, `${rel} must stay on this host`);
+    const r = await fetch(url.href);
+    assert.equal(r.status, 200, `${rel} (referenced by index.html) should be served`);
+  }
+
+  // the short aliases stay alive for anyone who imports a module directly
+  for (const p of ['/js/main.js', '/css/style.css', '/core/world.js', '/shared/rules.js', '/game/net.js', '/vendor/three.module.min.js', '/public/js/main.js']) {
     const r = await fetch(base + p);
     assert.equal(r.status, 200, `${p} should be served`);
+  }
+  // and those modules' own relative imports must resolve from the alias too
+  const mainSrc = await (await fetch(`${base}/js/main.js`)).text();
+  for (const m of mainSrc.matchAll(/from '(\.\.\/[^']+)'/g)) {
+    const url = new URL(m[1], `${base}/js/main.js`);
+    assert.equal((await fetch(url.href)).status, 200, `${m[1]} from /js/main.js must resolve`);
   }
   assert.equal((await fetch(`${base}/../package.json`)).status, 404, 'no path traversal');
   assert.equal((await fetch(`${base}/server/server.js`)).status, 404, 'server code is not served');
