@@ -47,6 +47,31 @@ test('server: static + REST + websocket state stream', async (t) => {
     await new Promise((r) => server.close(r));
   });
 
+  // ---- the hunt bookkeeping must survive a tick with nobody watching ------
+  // Regression: `game.hunt` used to be created only at the end of the first
+  // recordCycle(), so the tick that followed the Locust spawn threw and killed
+  // the process 90 s into every fresh server.
+  game.match.setPhase('hunt');
+  game.match.spawnLocust();
+  assert.ok(game.match.locust && game.match.locust.stats, 'the Locust object carries its own stats');
+  game.tick();
+  game.tick();
+  assert.ok(game.hunt, 'the server tracks the night even before it has recorded a cycle');
+  assert.equal(game.hunt.kills, 0, 'nothing has been killed yet');
+  assert.equal(game.match.events.length, 0,
+    'a headless server still drains its event queue (it used to queue them forever and never record a cycle)');
+  for (let i = 0; i < 40; i++) game.tick();
+  assert.ok(game.match.events.length < 80, `the backlog stays bounded (got ${game.match.events.length})`);
+
+  let recorded = 0;
+  const realRecord = game.recordCycle.bind(game);
+  game.recordCycle = async () => { recorded++; return realRecord(); };
+  game.match.setPhase('revive');            // despawns the Locust, pushes the event
+  game.lastBroadcast = 0;                   // the 20 Hz throttle is a scheduler, not a rule
+  game.tick();                              // the broadcast path has to notice it
+  assert.equal(recorded, 1, 'the end of a hunt is recorded as a cycle even with zero clients');
+  assert.equal(game.match.locust, null, 'and the Locust is gone again, as the brief says');
+
   // ---- REST ------------------------------------------------------------
   const health = await (await fetch(`${base}/api/health`)).json();
   assert.equal(health.ok, true);

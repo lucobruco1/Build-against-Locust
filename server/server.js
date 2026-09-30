@@ -65,6 +65,11 @@ class Game {
     this.cycleSeen = 0;
     this.timer = null;
     this.frame = 0;
+    // best hunt numbers of the night, kept here because the Locust object is
+    // despawned before the client (or the cycle record) asks for them. It used to
+    // be created only at the end of recordCycle(), so the first hunt tick of a
+    // fresh server threw on `this.hunt.kills` — i.e. the server died at 90 seconds.
+    this.hunt = { kills: 0, smashed: 0, grabs: 0, playerKills: 0 };
   }
 
   createMatch(over = {}) {
@@ -179,11 +184,15 @@ class Game {
   }
 
   broadcast() {
-    if (!this.hub || !this.hub.clients.size) return;
+    // The events are drained whether or not somebody is watching: they are a
+    // queue, and a server with no clients used to grow it forever (a slow leak of
+    // thousands of objects a minute) while never recording a single cycle.
     const evs = this.match.drainEvents().map(packEvent).filter(Boolean);
-    const state = encodeState(this.match);
-    if (evs.length) state.deltas = evs;
-    this.hub.send({ t: 'state', ...state });
+    if (this.hub && this.hub.clients.size) {
+      const state = encodeState(this.match);
+      if (evs.length) state.deltas = evs;
+      this.hub.send({ t: 'state', ...state });
+    }
     if (evs.some((e) => e.t === 'locustDespawn')) this.recordCycle().catch(() => {});
   }
 
@@ -214,6 +223,7 @@ class Game {
   }
 
   reset() {
+    this.hunt = { kills: 0, smashed: 0, grabs: 0, playerKills: 0 };
     const learn = this.match.learn;
     const league = this.match.league;          // keep the learned brains: a reset
     this.match = this.createMatch({ learn, league }); // is not amnesia
