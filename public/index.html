@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Build to Survive the Locust</title>
+<meta name="description" content="A Minecraft-like voxel survival game where seven bots and you fortify against an EfficientZero-driven Locust." />
+<link rel="stylesheet" href="/css/style.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0b0f'/%3E%3Cpath d='M11 8h10v6l-3 2v8h-4v-8l-3-2z' fill='%23e7c7cf'/%3E%3Ccircle cx='13' cy='11' r='1.4' fill='%237fe0ff'/%3E%3Ccircle cx='19' cy='11' r='1.4' fill='%237fe0ff'/%3E%3C/svg%3E" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "/vendor/three.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<!-- ---------------------------------------------------------- HUD overlay -->
+<div id="hud" class="hud">
+  <div class="phase-bar">
+    <div class="phase-left">
+      <span id="phase-name" class="phase-name">Lobby</span>
+      <span id="phase-cycle" class="phase-cycle">cycle 1</span>
+    </div>
+    <div class="phase-timer">
+      <div id="timer-fill" class="timer-fill"></div>
+      <span id="timer-text" class="timer-text">--:--</span>
+    </div>
+    <div class="phase-right">
+      <span id="locust-state" class="pill">no locust</span>
+      <button id="btn-help" class="ghost-btn" title="help">?</button>
+      <button id="btn-settings" class="ghost-btn" title="settings">⚙</button>
+    </div>
+  </div>
+
+  <div class="panel bases-panel">
+    <h3>Bases <span class="dim">wall / roof coverage</span></h3>
+    <ul id="base-list"></ul>
+    <div class="mini-row">
+      <span class="dim">mean wall</span><b id="mean-wall">0%</b>
+      <span class="dim">sealed</span><b id="sealed-count">0/8</b>
+    </div>
+  </div>
+
+  <div class="panel ai-panel">
+    <h3>
+      EfficientZero
+      <span class="dim" id="ai-summary">8 brains</span>
+      <button id="btn-ai-toggle" class="ghost-btn tiny">hide</button>
+    </h3>
+    <div id="ai-body">
+      <ul id="brain-list"></ul>
+      <div class="loss-graph">
+        <canvas id="loss-canvas" width="320" height="72"></canvas>
+        <div class="graph-legend"><span class="lg-loss"></span>loss <span class="lg-pol"></span>policy <span class="lg-val"></span>value</div>
+      </div>
+      <div class="ai-note">prior = expert teacher (DAgger). <span id="assist-note">—</span></div>
+    </div>
+  </div>
+
+  <div class="vitals">
+    <div id="health" class="hearts"></div>
+    <div id="status-line" class="status-line">stand still. listen.</div>
+  </div>
+
+  <div class="hotbar" id="hotbar"></div>
+  <div class="crosshair" id="crosshair"><span></span></div>
+
+  <div class="log" id="log"></div>
+
+  <div id="dread" class="dread"></div>
+  <div id="hurt-flash" class="hurt-flash"></div>
+  <div id="grabbed-veil" class="grabbed-veil"></div>
+</div>
+
+<!-- --------------------------------------------------------- center banner -->
+<div id="banner" class="banner hidden">
+  <div class="banner-title" id="banner-title">Build.</div>
+  <div class="banner-sub" id="banner-sub">90 seconds to make it insecure.</div>
+</div>
+
+<!-- ------------------------------------------------------------------ menu -->
+<div id="menu" class="modal">
+  <div class="modal-card menu-card">
+    <div class="title-block">
+      <h1>Build to Survive<br /><span>the Locust</span></h1>
+      <p class="tagline">
+        Ninety seconds to fortify. Then it comes for three minutes — and it is
+        not scripted: seven survivors and the thing hunting them are all driven
+        by EfficientZero networks (representation → latent dynamics → MCTS) that
+        keep learning for as long as the server runs.
+      </p>
+    </div>
+    <div class="menu-grid">
+      <label class="field">
+        <span>name</span>
+        <input id="in-name" maxlength="20" value="guest" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>search (MCTS sims ×)</span>
+        <input id="in-sims" type="range" min="0.2" max="3" step="0.1" value="1" />
+        <b id="out-sims">1.0×</b>
+      </label>
+      <label class="field">
+        <span>prior guidance</span>
+        <input id="in-assist" type="range" min="0" max="1" step="0.05" value="0.9" />
+        <b id="out-assist">0.90</b>
+      </label>
+      <label class="field">
+        <span>time scale</span>
+        <input id="in-time" type="range" min="0.25" max="8" step="0.25" value="1" />
+        <b id="out-time">1.00×</b>
+      </label>
+      <label class="field check">
+        <input id="in-learn" type="checkbox" checked />
+        <span>train networks live</span>
+      </label>
+      <label class="field check">
+        <input id="in-flat" type="checkbox" />
+        <span>flat arena world (rejoin)</span>
+      </label>
+    </div>
+    <div class="menu-foot">
+      <div id="menu-status" class="dim">connecting…</div>
+      <div class="btn-row">
+        <button id="btn-resume" class="primary hidden">back to the world</button>
+        <button id="btn-enter" class="primary" disabled>enter the world</button>
+      </div>
+    </div>
+    <div class="hint">
+      <b>WASD</b> move · <b>mouse</b> look · <b>left click</b> break · <b>right click</b> place ·
+      <b>space</b> jump · <b>shift</b> sprint · <b>1–9</b> hotbar · <b>Q</b> drop? no: <b>F</b> swing ·
+      <b>tab</b> scores · <b>esc</b> release mouse
+    </div>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------- help card -->
+<div id="help" class="modal hidden">
+  <div class="modal-card">
+    <h2>How this works</h2>
+    <div class="two-col">
+      <section>
+        <h3>You</h3>
+        <ul>
+          <li>Break <em>natural</em> blocks to mine stone/dirt/wood. You can only remove blocks <em>you</em> placed if they were placed by you.</li>
+          <li>Place blocks to close the shell: walls first, then the roof. The <b>Bases</b> panel is literally the number your bots are rewarded for.</li>
+          <li>Bots can only delete their <em>own</em> placed blocks — so nobody fixes your mistakes.</li>
+        </ul>
+        <h3>The hunt</h3>
+        <ul>
+          <li>At 0:00 the Locust spawns. It navigates with A* over the same voxel grid, breaking blocks in its way.</li>
+          <li>It <b>grabs</b> you (jump to struggle), then <b>stabs</b>. Death is temporary: everyone revives when the 3 minutes are up.</li>
+          <li>Sealed + roofed = it must chew through. Leave a gap and it comes in.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>The learning</h3>
+        <ul>
+          <li>Each brain: representation net → recurrent dynamics with a <b>value-prefix</b> head → policy/value heads, trained with a 5-step latent unroll, SimSiam consistency, two-hot categorical value &amp; reward heads.</li>
+          <li>Actions come from MCTS (PUCT, Dirichlet root noise) over the learned latent model; the visit distribution is the policy target.</li>
+          <li>Replay is prioritised per game; stale samples get <b>SVE</b> (stored search values) instead of TD targets; off-policy depth shrinks with priority.</li>
+          <li>An expert prior acts for a share of decisions (decaying, with a floor) and its distribution is the imitation target — that is why the bots can build at all in cycle 1.</li>
+          <li>Progress is saved to <code>.data/brains.json</code>: shut the server down and the bots are still smarter tomorrow.</li>
+        </ul>
+        <h3>Endpoints</h3>
+        <ul class="mono">
+          <li>GET /api/state · /api/world · /api/brains · /api/summary</li>
+          <li>POST /api/config · /api/save · /api/load · /api/reset</li>
+        </ul>
+      </section>
+    </div>
+    <div class="btn-row end"><button id="btn-help-close" class="primary">close</button></div>
+  </div>
+</div>
+
+<!-- ---------------------------------------------------------------- death -->
+<div id="death" class="modal hidden">
+  <div class="modal-card death-card">
+    <h2 id="death-title">It found you.</h2>
+    <p id="death-sub">You were grabbed and stabbed. The hunt is not over — you will wake up when it ends.</p>
+    <div class="countdown">revive in <b id="death-timer">--</b></div>
+  </div>
+</div>
+
+<!-- ----------------------------------------------------------- tally card -->
+<div id="tally" class="modal hidden">
+  <div class="modal-card">
+    <h2>Cycle report</h2>
+    <div id="tally-body" class="tally-body"></div>
+    <div class="btn-row end"><button id="btn-tally-close" class="primary">keep building</button></div>
+  </div>
+</div>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

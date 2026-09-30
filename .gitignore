@@ -1,0 +1,12 @@
+node_modules/
+.data/
+.data-test/
+.data*/
+data/models/*.json
+data/runs/*.json
+data/stats/*.json
+!data/**/.gitkeep
+*.log
+.DS_Store
+.tmp/
+coverage/

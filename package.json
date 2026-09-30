@@ -1,0 +1,28 @@
+{
+  "name": "build-against-locust",
+  "version": "1.0.0",
+  "description": "Build to Survive the Locust \u2014 a Minecraft-like voxel game where 7 bots and the player learn to fortify with real EfficientZero networks, then survive a 3 minute hunt by an EfficientZero-driven Locust.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "test": "node --test",
+    "sim": "node tools/simulate.js",
+    "sim:long": "node tools/simulate.js --cycles 6 --speed 400 --learn 1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "efficientzero",
+    "muzero",
+    "mcts",
+    "reinforcement-learning",
+    "voxel",
+    "minecraft",
+    "game",
+    "self-supervised"
+  ],
+  "license": "MIT"
+}
