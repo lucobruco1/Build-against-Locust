@@ -243,7 +243,7 @@ public/              css, js/{main,net,hud,palette,audio}.js,
                      js/render/{voxels,actors,scene}.js, vendor/three.module.min.js
 tools/simulate.js    headless runs / benchmarks / the integration harness
 tests/               world 8 · nav 9 · physics 13 · actions 16 · match 15 · ai 21 ·
-                     server 2 · client 11  → 95 tests, all green with `npm test`
+                     server 2 · client 11 · client-fallback 9  → 104 tests, all green with `npm test`
 ```
 
 The client renders voxels greedily per chunk from the same `shared/rules.js` block table,
