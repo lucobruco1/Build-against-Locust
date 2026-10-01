@@ -37,20 +37,23 @@ async function* walk(dir) {
 }
 
 /**
- * Resolve a module specifier the way the browser resolves a URL: from the
- * importer's directory, and `..` at the root clamps instead of climbing out.
- * That clamping is exactly why `../../../shared/rules.js` works both when the
- * file is served as `/public/js/x.js` and when it is served as `/js/x.js`.
+ * Resolve a specifier exactly the way a browser does, from the URL the file is
+ * served at under a given document base — and report whether the answer is still
+ * *inside* that base. Emulating `..` clamping at the origin root (as an earlier
+ * version of this test did) is what let a bug hide: a specifier that climbs out of
+ * the app resolves fine when the app owns the origin root, and 404s the moment the
+ * same tree is hosted under a project subpath (`/Build-against-Locust/` on GitHub
+ * Pages, or any host with a base path). `new URL` *is* the browser rule, so
+ * resolve with it and then demand containment.
  */
-function resolveLikeBrowser(fromUrlPath, spec) {
-  if (spec.startsWith('/')) return spec;
-  const base = fromUrlPath.slice(0, fromUrlPath.lastIndexOf('/') + 1).split('/').filter(Boolean);
-  for (const seg of spec.split('/')) {
-    if (seg === '.' || seg === '') continue;
-    if (seg === '..') base.pop();            // clamps at the root: [] stays []
-    else base.push(seg);
-  }
-  return '/' + base.join('/');
+function resolveFrom(base, relPath, spec, toRepo = (p) => p) {
+  const url = new URL(spec, 'http://static.test' + base + relPath.replace(/^\/+/, ''));
+  const dir = base.endsWith('/') ? base : base + '/';
+  const inside = url.pathname === base.replace(/\/$/, '') || url.pathname.startsWith(dir);
+  // strip the deployment base to get the path inside the repo, then undo any URL
+  // alias the server applies on top of the repo layout
+  const underBase = url.pathname.slice(Math.max(0, base.length - (base.endsWith('/') ? 1 : 0)));
+  return { path: url.pathname, inside, onDisk: path.join(ROOT, toRepo(underBase)) };
 }
 
 /* ------------------------------------------------------- 1. the entry point */
@@ -60,9 +63,18 @@ test('index.html is at the repo root and every path in it resolves', async () =>
   assert.match(html, /^<!DOCTYPE html>/, 'must be a real document, not a fragment');
   assert.match(html, /Build to Survive the Locust/, 'and the title of the game');
 
-  // one page, one copy: a second index.html is how a stale one survives
-  await assert.rejects(() => fs.stat(path.join(ROOT, 'public', 'index.html')),
-    'public/index.html must not come back — the repo root is the entry point');
+  // One page, one copy. `public/index.html` may exist only as a pointer, because a
+  // host pointed at `public/` would otherwise 404 with no explanation; a second
+  // *document* is how a stale copy survives, so that specifically is forbidden.
+  const pointer = await fs.readFile(path.join(ROOT, 'public', 'index.html'), 'utf8').catch(() => null);
+  if (pointer !== null) {
+    assert.doesNotMatch(pointer, /id="hud"|<canvas id="gl"/, 'public/index.html must not be a copy of the game');
+    assert.match(pointer, /location\.replace\(/, 'it must send the visitor to the root document');
+    assert.match(pointer, /location\.pathname/, 'it looks at the path it was served from, not a guess');
+    assert.match(pointer, /\.test\(here\)/, 'and only redirects when it really is the /public/ copy');
+    assert.match(pointer, /wrong directory published/i, 'otherwise it explains the misconfiguration in words');
+    assert.ok(pointer.length < 3000, `a pointer should be small, it is ${pointer.length} bytes`);
+  }
 
   const map = JSON.parse(/<script type="importmap">([\s\S]*?)<\/script>/.exec(html)[1]);
   assert.ok(map.imports?.three, 'three has to come from the importmap, not a CDN');
@@ -71,12 +83,12 @@ test('index.html is at the repo root and every path in it resolves', async () =>
     .concat(Object.values(map.imports));
   assert.ok(refs.includes('public/js/main.js'), 'the page must load public/js/main.js');
   for (const rel of refs) {
-    const url = resolveLikeBrowser('/index.html', rel);
-    const onDisk = path.join(ROOT, url);
-    assert.ok(!onDisk.startsWith('..') && path.relative(ROOT, onDisk) && !path.relative(ROOT, onDisk).startsWith('..'),
-      `${rel} must not climb out of the repo`);
-    const stat = await fs.stat(onDisk).catch(() => null);
-    assert.ok(stat?.isFile(), `${rel} (→ ${path.relative(ROOT, onDisk)}) must exist for a static host`);
+    for (const base of ['/', '/Build-against-Locust/']) {
+      const { path: resolved, inside, onDisk } = resolveFrom(base, 'index.html', rel);
+      assert.ok(inside, `${rel} must stay under the base (${base}) instead of resolving to ${resolved}`);
+      const stat = await fs.stat(onDisk).catch(() => null);
+      assert.ok(stat?.isFile(), `${rel} (→ ${resolved}) must exist for a static host under ${base}`);
+    }
   }
   assert.equal((await fs.readFile(path.join(ROOT, map.imports.three), 'utf8')).includes('THREE'), true,
     'and the vendored three is really three');
@@ -101,6 +113,20 @@ test('the browser module graph is complete and free of Node', async () => {
     const nodeish = src.match(/\brequire\(|from 'node:|import 'node:|process\.(env|argv|cwd)|__dirname|\bfs\.(read|write)Sync|\bBuffer\(/);
     assert.equal(nodeish, null, `${rel} must not depend on Node (${nodeish && nodeish[0]})`);
 
+    // The same file is reachable at three different URLs, and each one has to
+    // resolve its specifiers to a real file *within the base*: the repository root
+    // as a static site, that root under a project subpath, and the short alias the
+    // Node server puts in front of public/. A relative specifier that climbs out of
+    // the base passes the first and fails the second, which is the whole reason the
+    // loop checks containment rather than just file existence.
+    // `toRepo` undoes the server's URL aliases, because `/js/x.js` lives at
+    // public/js/x.js on disk; the other two cases are the plain repo layout.
+    const fromAlias = (f) => f.replace(/^\/(js|css|vendor)\//, '/public/$1/');
+    const bases = [
+      ['/', rel, 'static root', (f) => f],
+      ['/Build-against-Locust/', rel, 'subpath host', (f) => f],
+      ['/', rel.replace(/^public\/(js|css|vendor)\//, '$1/'), 'npm start alias', fromAlias],
+    ];
     for (const m of src.matchAll(specRe)) {
       const spec = m[1];
       checked++;
@@ -108,10 +134,12 @@ test('the browser module graph is complete and free of Node', async () => {
         assert.equal(spec, 'three', `${rel}: bare specifier '${spec}' has no importmap entry`);
         continue;
       }
-      const url = resolveLikeBrowser('/' + rel, spec);
-      const target = path.join(ROOT, url);
-      const stat = await fs.stat(target).catch(() => null);
-      assert.ok(stat?.isFile(), `${rel}: '${spec}' → ${url} is not a file, the page would fail to load`);
+      for (const [base, urlPath, label, toRepo] of bases) {
+        const { path: resolved, inside, onDisk } = resolveFrom(base, urlPath, spec, toRepo);
+        assert.ok(inside, `${rel} (served at /${urlPath}, ${label}): '${spec}' → ${resolved} escapes the base`);
+        const stat = await fs.stat(onDisk).catch(() => null);
+        assert.ok(stat?.isFile(), `${rel} (at /${urlPath}, ${label}): '${spec}' → ${resolved} is not a file, the page would fail to load`);
+      }
     }
   }
   assert.ok(files.length > 25 && checked > 50, `followed ${checked} specifiers across ${files.length} files`);

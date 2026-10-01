@@ -9,9 +9,9 @@
  *  - drives the renderer, HUD, banners and audio.
  */
 
-import { placeTarget } from '../../../core/raycast.js';
-import { unpackWorld } from '../../../game/net.js';
-import { B, BLOCK_DEFS, LACT, ENTITY } from '../../../shared/rules.js';
+import { placeTarget } from '../../core/raycast.js';
+import { unpackWorld } from '../../game/net.js';
+import { B, BLOCK_DEFS, LACT, ENTITY } from '../../shared/rules.js';
 import { GameScene } from './render/scene.js';
 import { Hud } from './hud.js';
 import { Net, InputPump } from './net.js';
@@ -33,6 +33,10 @@ const PITCH_MIN = -1.35, PITCH_MAX = 1.25;
 function reportToPage(where, err) {
   const msg = where + ': ' + (err && err.message ? err.message : err);
   console.error(where, err);
+  // Recorded as well as displayed: the inline watchdog in index.html prints this
+  // list under its own probes, and it must not have to guess what already failed.
+  if (window.__gbtlNote) window.__gbtlNote(msg);      // the inline hook in index.html
+  else (window.__gbtlErrors = window.__gbtlErrors || []).push(msg);
   try {
     const line = document.getElementById('menu-status');
     if (line) { line.textContent = msg; line.classList.add('error'); }

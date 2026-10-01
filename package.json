@@ -9,6 +9,7 @@
     "dev": "node --watch server/server.js",
     "test": "node --test",
     "sim": "node tools/simulate.js",
+    "check:static": "node tools/check-static.mjs",
     "sim:long": "node tools/simulate.js --cycles 6 --speed 400 --learn 1"
   },
   "engines": {

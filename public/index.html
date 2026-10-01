@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!--
+  A pointer, not a second page. The game's document is index.html at the repository
+  root; this file only exists so that a host configured to publish `public/` sends
+  you to the right place (or tells you what to change) instead of showing a bare 404
+  and an empty devtools console. Keep nothing here but this.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Build to Survive the Locust — the page lives at the repository root</title>
+<style>
+  body { background: #0a0b0f; color: #cfd3dd; font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 8vh auto; max-width: 46rem; padding: 0 1.2rem; }
+  h1 { font-size: 17px; color: #e7c7cf; letter-spacing: .02em; }
+  code { color: #7fe0ff; }
+  a { color: #7fe0ff; }
+</style>
+<script>
+  // Served as `/public/index.html`? Then the root document is one directory up and
+  // the whole tree is present — just go there.
+  //
+  // Served as `/index.html` while this is still what you got? Then the publish
+  // directory is `public/`, and `/shared/rules.js`, `/core/…`, `/ai/…`, `/game/…`
+  // are outside it: there is nothing to redirect to, and saying so beats a loop.
+  var here = location.pathname;
+  if (/\/public\/index\.html$/.test(here) || /\/public\/?$/.test(here)) {
+    location.replace(here.replace(/\/public\/.*$/, '/') + 'index.html');
+  }
+</script>
+</head>
+<body>
+  <h1>Build to Survive the Locust — wrong directory published</h1>
+  <p>
+    The entry point is <code>index.html</code> at the <strong>repository root</strong>, not
+    <code>public/index.html</code>. It loads <code>public/js/main.js</code>, and imports
+    <code>shared/</code>, <code>core/</code>, <code>ai/</code> and <code>game/</code> as
+    modules, because the browser and the Node server run the same files. Publishing only
+    <code>public/</code> hides four of those five trees, so the page cannot boot.
+  </p>
+  <p>
+    Set the publish directory to <code>.</code> (the repo root) — <code>netlify.toml</code> at
+    the root already does that — and don't add a <code>/* /index.html</code> rewrite, which
+    would answer every <code>.js</code> request with this document and make the module loader
+    fail while every request still reports 200.
+  </p>
+  <p><a href="../index.html">Open the game at the repository root →</a></p>
+</body>
+</html>

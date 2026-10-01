@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { VoxelRenderer, makeCursor } from './voxels.js';
 import { BuilderMesh, LocustMesh, ParticleBurst } from './actors.js';
-import { BLOCK_DEFS, B } from '../../../../shared/rules.js';
+import { BLOCK_DEFS, B } from '../../../shared/rules.js';
 
 const DAY = {
   sky: new THREE.Color(0x9ec7e8), fog: new THREE.Color(0xbfd8ea), sun: new THREE.Color(0xfff3d6), hemi: 0.72, sunI: 0.95,

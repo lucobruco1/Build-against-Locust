@@ -35,6 +35,36 @@
 <meta name="description" content="A Minecraft-like voxel survival game where seven bots and you fortify against an EfficientZero-driven Locust." />
 <link rel="stylesheet" href="public/css/style.css" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0b0f'/%3E%3Cpath d='M11 8h10v6l-3 2v8h-4v-8l-3-2z' fill='%23e7c7cf'/%3E%3Ccircle cx='13' cy='11' r='1.4' fill='%237fe0ff'/%3E%3Ccircle cx='19' cy='11' r='1.4' fill='%237fe0ff'/%3E%3C/svg%3E" />
+<script>
+  /*
+   * The error surface is installed BEFORE the module tag, on purpose. If
+   * `public/js/main.js` or one of its imports fails to *load*, nothing inside
+   * main.js ever runs, so main.js cannot be the one to report it — and `error`
+   * events for resource loads do not bubble, they have to be caught in the
+   * capture phase. This is what turns "a blank menu" into a sentence.
+   */
+  (function () {
+    var errors = (window.__gbtlErrors = []);
+    function note(msg) {
+      errors.push(msg);
+      var line = document.getElementById('menu-status');
+      if (line) { line.textContent = msg; line.classList.add('error'); }
+    }
+    window.__gbtlNote = note;
+    window.addEventListener('error', function (e) {
+      var t = e.target;
+      if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+        var url = t.src || t.href;
+        note('a ' + t.tagName.toLowerCase() + ' failed to load: ' + url + ' — the server answered, but not with a module. A static host that rewrites every path to index.html (the SPA / catch-all rule) does exactly this: the request "succeeds" with HTML, and the module loader refuses it.');
+      } else if (e.message) {
+        note('client error: ' + ((e.error && e.error.message) || e.message));
+      }
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {
+      note('unhandled promise: ' + ((e.reason && e.reason.message) || e.reason));
+    });
+  })();
+</script>
 <script type="importmap">
 {
   "imports": {
@@ -229,33 +259,81 @@
 <script>
   /*
    * Inline and deliberately NOT a module. If the module graph never loads, no
-   * module gets the chance to say so, and the menu would sit on its initial
-   * text forever looking like the server's fault. So: if public/js/main.js has
-   * not announced itself after a few seconds, probe the paths it needs and put
-   * the answer on screen.
+   * module gets a chance to say so, and the menu would sit on its initial text
+   * forever, looking like the server's fault.
+   *
+   * Two rules this obeys, because breaking either turned a diagnosable page into
+   * a mystery:
+   *
+   *   1. it never throws away what the client already reported. An earlier version
+   *      overwrote #menu-mode with its own probe list, which is exactly how a real
+   *      "the browser refused the module" error got erased from the screen.
+   *   2. HTTP 200 is not the question. A static host with a catch-all rewrite
+   *      (Netlify and every SPA preset answers `/*` with index.html) returns 200
+   *      for `shared/rules.js` — as HTML. The module loader then refuses it and the
+   *      page dies with "everything is 200" on screen. So the probe checks the
+   *      content type and quotes the first bytes, and it asks the module loader
+   *      itself by import()ing the entry point: a failed module evaluation is
+   *      cached, so the rejection it hands back is the browser's own diagnosis.
    */
-  setTimeout(function () {
-    if (window.__game) return;
-    var line = document.getElementById('menu-status');
-    var mode = document.getElementById('menu-mode');
-    var paths = ['public/js/main.js', 'public/vendor/three.module.min.js', 'shared/rules.js', 'game/local.js'];
-    if (line) {
-      line.textContent = 'the client never started — probing the paths this page needs…';
-      line.classList.add('error');
+  (function () {
+    var errors = (window.__gbtlErrors = window.__gbtlErrors || []);
+    var ENTRY = 'public/js/main.js';
+
+    function el(id) { return document.getElementById(id); }
+
+    function show(status, mode) {
+      var line = el('menu-status');
+      var sub = el('menu-mode');
+      if (line) { line.textContent = status; line.classList.add('error'); }
+      var notes = errors.map(function (e) { return 'client said: ' + e; });
+      if (sub) sub.textContent = notes.concat(mode ? [mode] : []).join('\n');
     }
-    Promise.all(paths.map(function (u) {
-      return fetch(u, { cache: 'no-store' }).then(
-        function (r) { return u + ' → HTTP ' + r.status; },
-        function (e) { return u + ' → ' + ((e && e.message) || 'fetch failed'); }
-      );
-    })).then(function (rows) {
-      rows.push(typeof WebSocket === 'function' ? 'WebSocket available' : 'no WebSocket constructor');
-      if (location.protocol === 'file:') rows.push('file:// cannot load ES modules — run any static server');
-      rows.push('base: ' + document.baseURI);
-      if (mode) mode.textContent = rows.join('  ·  ');
-      if (line) line.textContent = 'client modules did not execute — the lines below say which ones, devtools has the stack';
-    });
-  }, 6000);
+
+    function probe(u) {
+      return fetch(u, { cache: 'no-store' }).then(function (r) {
+        var ct = r.headers.get('content-type') || '?';
+        var looksLikeJs = /javascript|ecmascript/.test(ct);
+        return r.text().then(function (body) {
+          var html = /^\s*<(!DOCTYPE|html)/i.test(body);
+          var verdict = 'HTTP ' + r.status + ', ' + ct + (html ? ' — ⚠ that is HTML, not JS' : '');
+          return { url: u, ok: r.ok && looksLikeJs && !html, text: u + ' → ' + verdict };
+        });
+      }, function (e) {
+        return { url: u, ok: false, text: u + ' → ' + ((e && e.message) || 'fetch failed') };
+      });
+    }
+
+    setTimeout(function () {
+      if (window.__game) return;
+      show('the client never started — asking the browser what it thinks of the module graph…', 'probing…');
+      // The real diagnosis: re-import the entry point. Its module record (and its
+      // failure) is cached, so this resolves only if evaluation genuinely succeeded.
+      var imported = import(ENTRY).then(function () {
+        return { ok: true, text: 'import("' + ENTRY + '") succeeded — the module evaluated, so the client constructor threw or is still running' };
+      }, function (e) {
+        var msg = (e && e.message) || String(e);
+        errors.push(msg);
+        return { ok: false, text: 'import("' + ENTRY + '") failed: ' + msg };
+      });
+      Promise.all([imported].concat(['public/js/main.js', 'public/vendor/three.module.min.js', 'shared/rules.js', 'core/raycast.js', 'game/net.js', 'game/local.js', 'ai/brain.js'].map(probe)))
+        .then(function (rows) {
+          var entry = rows[0], files = rows.slice(1);
+          var bad = files.filter(function (f) { return !f.ok; });
+          var head = !entry.ok
+            ? 'the browser refused the client module — the line below is its own error'
+            : (bad.length
+              ? 'the client module loaded, but ' + bad.length + ' of its files are not being served as JavaScript'
+              : 'every file loaded and evaluated; the client is booting slowly or died after the boot (devtools console has the stack)');
+          var notes = files.map(function (f) { return (f.ok ? '✓ ' : '✗ ') + f.text; });
+          notes.push(typeof WebSocket === 'function' ? 'WebSocket available' : 'no WebSocket constructor');
+          if (location.protocol === 'file:') notes.push('file:// cannot load ES modules — run any static server');
+          notes.push('base: ' + document.baseURI);
+          notes.push('fix for a catch-all host: remove the `/* /index.html` rewrite (or use the included netlify.toml), which is what answers .js paths with HTML');
+          show(head, notes.join('  ·  '));
+        });
+    }, 5000);
+  })();
 </script>
 </body>
 </html>

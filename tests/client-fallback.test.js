@@ -177,15 +177,36 @@ test('a frame that allows localStorage uses it', () => withFakeWebSocket(class {
   }
 }));
 
+test('a static deployment is configured in the repo, not in tribal knowledge', async () => {
+  const toml = await fs.readFile(path.join(ROOT, 'netlify.toml'), 'utf8');
+  assert.match(toml, /publish\s*=\s*"\."/m, 'publish dir must be the repo root, where all five module trees live');
+  assert.match(toml, /command\s*=\s*""/, 'no build step: plain ES modules and a vendored three');
+  assert.doesNotMatch(toml, /^\[\[redirects\]\]/m, 'and no catch-all rewrite — that is what answers every .js request with index.html at HTTP 200');
+  assert.match(toml, /\/public\/vendor\/\*/, 'the vendored library is the one thing worth caching forever');
+});
+
 test('the page itself refuses to be a silent spinner', async () => {
   const html = await fs.readFile(path.join(ROOT, 'index.html'), 'utf8');
+  const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)].map((m) => ({ attrs: m[1], body: m[2] }));
+
+  // an error surface that lives *inside* main.js cannot report main.js failing to
+  // load, so the hook has to be inline and before the module tag
+  const hook = scripts.find((x) => /__gbtlNote/.test(x.body));
+  assert.ok(hook, 'an inline error hook must exist');
+  assert.ok(scripts.indexOf(hook) < scripts.findIndex((x) => /type="module"/.test(x.attrs)),
+    'and it must be installed before the module tag, or a failed module load is reported by nobody');
+  assert.doesNotMatch(hook.attrs, /type="module"/, 'classic script, so it runs even if module loading is broken');
+  assert.match(hook.body, /addEventListener\('error', function \(e\) \{[\s\S]*\}, true\)/, 'capture phase: resource errors do not bubble');
+  assert.match(hook.body, /tagName === \'SCRIPT\'|tagName === "SCRIPT"/, 'it distinguishes a failed <script>/<link> load from a thrown error');
+  assert.match(hook.body, /rewrites every path to index\.html/, 'and names the catch-all rewrite, the usual cause');
   assert.match(html, /loading the client modules…/, 'the initial text must describe the client, not promise a server');
 
-  // an inline classic script, because a module that never loads cannot report that
-  const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
-  const watchdog = scripts.find((m) => /window\.__game/.test(m[2]));
-  assert.ok(watchdog, 'there must be a watchdog next to the module tag');
-  assert.doesNotMatch(watchdog[1], /type="module"/, 'and it cannot be a module, or it dies with the module graph');
+  // …and a watchdog after it, because "the module loaded but never ran" produces
+  // no error event at all: the import succeeded, the constructor did not finish
+  const watchdogIdx = scripts.findIndex((x) => /window\.__game/.test(x.body));
+  assert.ok(watchdogIdx >= 0, 'there must be a watchdog after the module tag');
+  const watchdog = { 2: scripts[watchdogIdx].body };
+  assert.doesNotMatch(scripts[watchdogIdx].attrs, /type="module"/, 'and it cannot be a module, or it dies with the module graph');
   for (const p of ['public/js/main.js', 'public/vendor/three.module.min.js', 'shared/rules.js', 'game/local.js']) {
     assert.ok(watchdog[2].includes(p), `the watchdog probes ${p}`);
   }
@@ -194,11 +215,13 @@ test('the page itself refuses to be a silent spinner', async () => {
 
   const css = await fs.readFile(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
   assert.match(css, /#menu-status\.error/, 'the status line needs an error style, not grey-on-grey');
+
 });
 
 test('main.js surfaces its own boot failures', async () => {
   const src = await fs.readFile(path.join(ROOT, 'public', 'js', 'main.js'), 'utf8');
-  assert.match(src, /window\.addEventListener\('error'/, 'errors go on the page');
+  assert.match(src, /window\.__gbtlNote\(msg\)/, 'it reports through the page-level sink, not a private copy');
+  assert.match(src, /window\.addEventListener\('error'/, 'and keeps its own handlers as a fallback');
   assert.match(src, /window\.addEventListener\('unhandledrejection'/, 'including rejected promises');
   assert.match(src, /client = new Client\(\);/, 'the boot is inside a try');
   assert.match(src, /client booted — asking for a game server/, 'and the first words are about the client');

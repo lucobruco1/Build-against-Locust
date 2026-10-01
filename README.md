@@ -36,7 +36,13 @@ vendored under `public/vendor/`.
 
 ```bash
 python3 -m http.server 8000      # then open http://localhost:8000/index.html
+npm run check:static             # or: node tools/check-static.mjs https://your.host
 ```
+
+`tools/check-static.mjs` walks the document, its import map and every module specifier it
+can reach, and prints status **and content type** per file — because the usual way to
+deploy this repo wrongly is a host that answers `shared/rules.js` with `index.html` at
+HTTP 200. It exits non-zero, so it can go in CI.
 
 With nothing listening on `/ws`, `public/js/net.js` gives up (at once if the socket is
 refused, after a 1.5 s deadline if it hangs) and boots `game/local.js`, which is the

@@ -1,0 +1,32 @@
+[build]
+# The entry point is the repository root: index.html there references public/…,
+# shared/…, core/…, ai/… and game/… relatively, so the publish directory has to be
+# the repo root. Publish `public/` instead and `/shared/rules.js` (the module every
+# file imports) simply does not exist — the game is one tree, not a `public/` app
+# with assets copied in, because the same files also run under Node on the server.
+publish = "."
+
+# No build step: this repo is plain ES modules, `three.js` is vendored, and
+# `npm start` is a server, not a bundler. `npm install` would install nothing.
+command = ""
+
+[dev]
+command = "node server/server.js"
+targetPort = 3000
+
+# Deliberately NO `[[redirects]]` catch-all (`/* /index.html 200`). That is the
+# single most common way to break this deployment on a static host: the browser
+# then asks for `shared/rules.js`, gets index.html back with HTTP 200, and the
+# module loader refuses it — the page sits there while every request looks fine.
+# A static 404 is the honest answer for a path that is not a file.
+
+[[headers]]
+for = "/public/vendor/*"
+[headers.values]
+Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+for = "/*"
+[headers.values]
+X-Content-Type-Options = "nosniff"
+Referrer-Policy = "same-origin"
